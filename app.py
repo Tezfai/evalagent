@@ -1,5 +1,5 @@
 import streamlit as st
-from backend.rag import ask_question
+from backend.rag_ai_search import ask_question
 
 st.set_page_config(
     page_title="Incident Investigation Assistant",
