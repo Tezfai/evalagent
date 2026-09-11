@@ -13,6 +13,26 @@ client = AzureOpenAI(
     azure_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT"),
     api_version="2024-12-01-preview"
 )
+def chunk_text(text, chunk_size=500, overlap=100):
+
+    chunks = []
+
+    start = 0
+
+    while start < len(text):
+
+        end = start + chunk_size
+
+        chunks.append(
+            text[start:end]
+        )
+
+        start += chunk_size - overlap
+
+    return chunks
+
+
+
 
 documents = []
 
@@ -24,10 +44,16 @@ for root, _, files in os.walk("data"):
             with open(path, "r", encoding="utf-8") as f:
                 text = f.read()
 
-            documents.append({
-                "file": path,
-                "text": text
-            })
+            text = text.replace("\\n", "\n")
+
+            chunks = chunk_text(text)
+
+            for i, chunk in enumerate(chunks):
+                documents.append({
+                    "file": path,
+                    "chunk_id": i,
+                    "text": chunk
+                })
 
 vectors = []
 
