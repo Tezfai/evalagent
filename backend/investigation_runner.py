@@ -7,6 +7,7 @@ from azure.search.documents import SearchClient
 from dotenv import load_dotenv
 
 try:
+    from .deployment_agent import analyze_deployment
     from .investigator_agent import (
         GPT5_MINI_DEPLOYMENT,
         client,
@@ -14,6 +15,7 @@ try:
     )
     from .search_ai_search import search_chunks
 except ImportError:
+    from deployment_agent import analyze_deployment
     from investigator_agent import (
         GPT5_MINI_DEPLOYMENT,
         client,
@@ -32,6 +34,7 @@ RUNBOOK_PATTERN = re.compile(
 
 REPORT_SECTIONS = (
     "Primary Evidence",
+    "Deployment Analysis",
     "Incident",
     "Root Cause",
     "Impact",
@@ -44,6 +47,7 @@ REPORT_SECTIONS = (
 REPORT_SYSTEM_PROMPT = """You are an incident investigation report writer.
 Use only the investigation plan and evidence provided by the user.
 Return a valid JSON object with exactly these keys:
+- Deployment Analysis
 - Incident
 - Root Cause
 - Impact
@@ -56,6 +60,8 @@ Each value must be a concise markdown-ready string. Clearly state when the
 available evidence does not establish an answer. Do not invent facts.
 Focus the report on the PRIMARY EVIDENCE.
 Supporting documents provide additional context only.
+The Deployment Analysis value must include Change Summary, Risk Rating,
+Related Incidents, and Rollback Status when deployment evidence is available.
 """
 
 
@@ -244,6 +250,18 @@ def _format_report(report, primary_files):
     return "\n\n".join(sections)
 
 
+def _format_deployment_analysis(analysis):
+    if not analysis:
+        return "No deployment evidence available."
+
+    return (
+        f"Change Summary: {analysis.get('change_summary', '')}\n"
+        f"Risk Rating: {analysis.get('risk_rating', '')}\n"
+        f"Related Incidents: {', '.join(analysis.get('related_incidents', []))}\n"
+        f"Rollback Status: {analysis.get('rollback_status', '')}"
+    )
+
+
 def run_investigation(question):
     """Create an investigation plan, gather evidence, and generate a report."""
     plan = create_investigation_plan(question)
@@ -343,6 +361,30 @@ def run_investigation(question):
         primary_evidence = incident_evidence[0]
         primary_evidence_items = _mark_primary(incident_evidence)
 
+    deployment_analysis = None
+    deployment_evidence_item = selected_deployment
+    if deployment_evidence_item is None:
+        deployment_evidence_item = next(
+            (
+                item
+                for item in evidence_candidates
+                if item.get("category") == "deployment"
+            ),
+            None,
+        )
+
+    if deployment_evidence_item:
+        deployment_file = deployment_evidence_item.get("file")
+        deployment_content = "\n\n".join(
+            item.get("content", "")
+            for item in evidence_candidates
+            if item.get("file") == deployment_file
+        )
+        deployment_analysis = analyze_deployment(
+            deployment_file,
+            deployment_content,
+        )
+
     primary_files = (
         [primary_evidence["file"]]
         if primary_evidence
@@ -377,6 +419,8 @@ def run_investigation(question):
                 "content": (
                     f"Investigation plan:\n{json.dumps(plan, indent=2)}\n\n"
                     f"Primary Evidence Files: {', '.join(primary_files) or 'None'}\n\n"
+                    f"Deployment Analysis:\n"
+                    f"{json.dumps(deployment_analysis, indent=2) if deployment_analysis else 'None available.'}\n\n"
                     f"{_format_context(primary_evidence_items, supporting_evidence)}"
                 ),
             },
@@ -390,6 +434,9 @@ def run_investigation(question):
         raise ValueError("The investigation report generator returned an empty response")
 
     report = json.loads(report_text)
+    report["Deployment Analysis"] = _format_deployment_analysis(
+        deployment_analysis
+    )
     return _format_report(report, primary_files), [
         *primary_evidence_items,
         *supporting_evidence,
