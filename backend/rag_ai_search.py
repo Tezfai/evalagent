@@ -49,13 +49,18 @@ def ask_question(question):
 
     for result in results:
         source = result.get("file")
+        chunk_id = result.get("chunk_id")
         content = result.get("content", "")
 
         context += f"\n--- SOURCE: {source} ---\n"
         context += content
         context += "\n\n"
 
-        sources.append(source)
+        sources.append({
+            "file": source,
+            "content": content,
+            "chunk_id": chunk_id,
+        })
 
     answer = client.chat.completions.create(
         model=os.getenv("AZURE_OPENAI_CHAT_DEPLOYMENT"),
@@ -103,4 +108,4 @@ if __name__ == "__main__":
     print(answer)
 
     for source in sources:
-        print(source)
+        print(f"{source['file']} (chunk {source['chunk_id']})")
