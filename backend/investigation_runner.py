@@ -13,6 +13,8 @@ try:
         client,
         create_investigation_plan,
     )
+    from .critic_agent import review_report
+    from .runbook_agent import analyze_runbook
     from .search_ai_search import search_chunks
 except ImportError:
     from deployment_agent import analyze_deployment
@@ -21,6 +23,8 @@ except ImportError:
         client,
         create_investigation_plan,
     )
+    from critic_agent import review_report
+    from runbook_agent import analyze_runbook
     from search_ai_search import search_chunks
 
 load_dotenv()
@@ -35,12 +39,14 @@ RUNBOOK_PATTERN = re.compile(
 REPORT_SECTIONS = (
     "Primary Evidence",
     "Deployment Analysis",
+    "Runbook Analysis",
     "Incident",
     "Root Cause",
     "Impact",
     "Resolution",
     "Related Documents",
     "Recommendations",
+    "Report Review",
 )
 
 
@@ -48,12 +54,14 @@ REPORT_SYSTEM_PROMPT = """You are an incident investigation report writer.
 Use only the investigation plan and evidence provided by the user.
 Return a valid JSON object with exactly these keys:
 - Deployment Analysis
+- Runbook Analysis
 - Incident
 - Root Cause
 - Impact
 - Resolution
 - Related Documents
 - Recommendations
+- Report Review
 - Primary Evidence
 
 Each value must be a concise markdown-ready string. Clearly state when the
@@ -62,6 +70,9 @@ Focus the report on the PRIMARY EVIDENCE.
 Supporting documents provide additional context only.
 The Deployment Analysis value must include Change Summary, Risk Rating,
 Related Incidents, and Rollback Status when deployment evidence is available.
+The Runbook Analysis value must include Purpose, Immediate Actions,
+Escalation Conditions, Recovery Steps, and Risk Level when runbook evidence is
+available.
 """
 
 
@@ -262,6 +273,74 @@ def _format_deployment_analysis(analysis):
     )
 
 
+def _format_runbook_list(values):
+    if not values:
+        return "- None available."
+    return "\n".join(f"- {value}" for value in values)
+
+
+def _format_runbook_analysis(analysis):
+    if not analysis:
+        return "No runbook evidence available."
+
+    return (
+        f"Purpose: {analysis.get('purpose', '')}\n\n"
+        f"Immediate Actions:\n"
+        f"{_format_runbook_list(analysis.get('immediate_actions', []))}\n\n"
+        f"Escalation Conditions:\n"
+        f"{_format_runbook_list(analysis.get('escalation_conditions', []))}\n\n"
+        f"Recovery Steps:\n"
+        f"{_format_runbook_list(analysis.get('recovery_steps', []))}\n\n"
+        f"Risk Level: {analysis.get('risk_level', '')}"
+    )
+
+
+def _format_review_list(values):
+    if not values:
+        return "- None identified."
+    return "\n".join(f"- {value}" for value in values)
+
+
+def _format_report_review(review):
+    if not review:
+        return "No report review available."
+
+    return (
+        f"Confidence: {review.get('confidence', '')}\n"
+        f"Report Quality: {review.get('report_quality', '')}\n"
+        f"Evidence Coverage: {review.get('evidence_coverage', '')}\n\n"
+        f"Missing Evidence:\n"
+        f"{_format_review_list(review.get('missing_evidence', []))}\n\n"
+        f"Unsupported Claims:\n"
+        f"{_format_review_list(review.get('unsupported_claims', []))}\n\n"
+        f"Recommended Next Steps:\n"
+        f"{_format_review_list(review.get('recommended_next_steps', []))}\n\n"
+        f"Review Summary: {review.get('review_summary', '')}"
+    )
+
+
+def _combine_document_content(evidence, file_name):
+    contents = []
+    seen_chunks = set()
+
+    for item in evidence:
+        if item.get("file") != file_name:
+            continue
+
+        chunk_id = item.get("chunk_id")
+        if chunk_id is not None:
+            chunk_key = str(chunk_id)
+            if chunk_key in seen_chunks:
+                continue
+            seen_chunks.add(chunk_key)
+
+        content = item.get("content", "")
+        if content:
+            contents.append(content)
+
+    return "\n\n".join(contents)
+
+
 def run_investigation(question):
     """Create an investigation plan, gather evidence, and generate a report."""
     plan = create_investigation_plan(question)
@@ -304,7 +383,8 @@ def run_investigation(question):
               if file_name != primary_runbook],
         ]
 
-    if primary_deployment or plan.get("search_deployment"):
+    deployment_evidence = []
+    if deployment_files or primary_deployment or plan.get("search_deployment"):
         if primary_deployment:
             deployment_evidence = _search_document(
                 primary_deployment,
@@ -321,11 +401,15 @@ def run_investigation(question):
             primary_evidence_items = []
         for deployment_file in deployment_files:
             if deployment_file != primary_deployment:
-                initial_evidence.extend(
-                    _search_document(deployment_file, "deployment")
+                additional_deployment_evidence = _search_document(
+                    deployment_file,
+                    "deployment",
                 )
+                deployment_evidence.extend(additional_deployment_evidence)
+                initial_evidence.extend(additional_deployment_evidence)
 
-    if primary_runbook or plan.get("search_runbooks"):
+    runbook_evidence = []
+    if runbook_files or primary_runbook or plan.get("search_runbooks"):
         if primary_runbook:
             runbook_evidence = _search_document(
                 primary_runbook,
@@ -338,9 +422,12 @@ def run_investigation(question):
                 initial_evidence.extend(runbook_evidence)
         for runbook_file in runbook_files:
             if runbook_file != primary_runbook:
-                initial_evidence.extend(
-                    _search_document(runbook_file, "runbook")
+                additional_runbook_evidence = _search_document(
+                    runbook_file,
+                    "runbook",
                 )
+                runbook_evidence.extend(additional_runbook_evidence)
+                initial_evidence.extend(additional_runbook_evidence)
 
     evidence_candidates = [
         *initial_evidence,
@@ -375,14 +462,45 @@ def run_investigation(question):
 
     if deployment_evidence_item:
         deployment_file = deployment_evidence_item.get("file")
-        deployment_content = "\n\n".join(
-            item.get("content", "")
-            for item in evidence_candidates
-            if item.get("file") == deployment_file
+        deployment_content = _combine_document_content(
+            evidence_candidates,
+            deployment_file,
         )
         deployment_analysis = analyze_deployment(
             deployment_file,
             deployment_content,
+        )
+
+    runbook_analysis = None
+    runbook_evidence_item = None
+    if primary_runbook:
+        runbook_evidence_item = next(
+            (
+                item
+                for item in evidence_candidates
+                if item.get("file") == primary_runbook
+            ),
+            None,
+        )
+    if runbook_evidence_item is None:
+        runbook_evidence_item = next(
+            (
+                item
+                for item in evidence_candidates
+                if item.get("category") == "runbook"
+            ),
+            None,
+        )
+
+    if runbook_evidence_item:
+        runbook_file = runbook_evidence_item.get("file")
+        runbook_content = _combine_document_content(
+            evidence_candidates,
+            runbook_file,
+        )
+        runbook_analysis = analyze_runbook(
+            runbook_file,
+            runbook_content,
         )
 
     primary_files = (
@@ -421,6 +539,8 @@ def run_investigation(question):
                     f"Primary Evidence Files: {', '.join(primary_files) or 'None'}\n\n"
                     f"Deployment Analysis:\n"
                     f"{json.dumps(deployment_analysis, indent=2) if deployment_analysis else 'None available.'}\n\n"
+                    f"Runbook Analysis:\n"
+                    f"{json.dumps(runbook_analysis, indent=2) if runbook_analysis else 'None available.'}\n\n"
                     f"{_format_context(primary_evidence_items, supporting_evidence)}"
                 ),
             },
@@ -437,7 +557,17 @@ def run_investigation(question):
     report["Deployment Analysis"] = _format_deployment_analysis(
         deployment_analysis
     )
-    return _format_report(report, primary_files), [
+    report["Runbook Analysis"] = _format_runbook_analysis(runbook_analysis)
+    report_text = _format_report(report, primary_files)
+    all_evidence = _deduplicate_evidence(
+        [*primary_evidence_items, *initial_evidence]
+    )
+    evidence_text = _format_evidence(all_evidence) or "None available."
+    report_review = review_report(report_text, evidence_text)
+    report["Report Review"] = _format_report_review(report_review)
+    report_text = _format_report(report, primary_files)
+
+    return report_text, [
         *primary_evidence_items,
         *supporting_evidence,
     ]
