@@ -69,6 +69,61 @@ def search_chunks(query):
     ]
 
 
+def search_document(file_name):
+    """Retrieve all chunks for one document by searching its file field."""
+    search_endpoint = os.getenv("AZURE_SEARCH_ENDPOINT")
+    search_key = os.getenv("AZURE_SEARCH_KEY")
+    search_index_name = os.getenv("AZURE_SEARCH_INDEX")
+
+    required_settings = {
+        "AZURE_SEARCH_ENDPOINT": search_endpoint,
+        "AZURE_SEARCH_KEY": search_key,
+        "AZURE_SEARCH_INDEX": search_index_name,
+    }
+    missing_settings = [
+        name for name, value in required_settings.items() if not value
+    ]
+    if missing_settings:
+        raise ValueError(
+            "Missing required environment variables: "
+            + ", ".join(missing_settings)
+        )
+
+    search_client = SearchClient(
+        endpoint=search_endpoint,
+        index_name=search_index_name,
+        credential=AzureKeyCredential(search_key),
+    )
+    requested_file = os.path.basename(file_name).lower()
+    results = search_client.search(
+        search_text=f'"{requested_file}"',
+        select=["file", "chunk_id", "content"],
+    )
+    results = list(results)
+    matching_results = [
+        result
+        for result in results
+        if os.path.basename(str(result.get("file", ""))).lower()
+        == requested_file
+    ]
+    if not matching_results:
+        print("Candidate files:")
+        for result in results:
+            print(result.get("file"))
+    results = [
+        result for result in matching_results
+    ]
+
+    return [
+        {
+            "file": result.get("file"),
+            "chunk_id": result.get("chunk_id"),
+            "content": result.get("content", ""),
+        }
+        for result in results
+    ]
+
+
 if __name__ == "__main__":
     query = input("Question: ")
     results = search_chunks(query)

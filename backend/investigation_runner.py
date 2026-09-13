@@ -1,9 +1,6 @@
 import json
-import os
 import re
 
-from azure.core.credentials import AzureKeyCredential
-from azure.search.documents import SearchClient
 from dotenv import load_dotenv
 
 try:
@@ -15,7 +12,7 @@ try:
     )
     from .critic_agent import review_report
     from .runbook_agent import analyze_runbook
-    from .search_ai_search import search_chunks
+    from .tool_registry import tool_registry
 except ImportError:
     from deployment_agent import analyze_deployment
     from investigator_agent import (
@@ -25,7 +22,7 @@ except ImportError:
     )
     from critic_agent import review_report
     from runbook_agent import analyze_runbook
-    from search_ai_search import search_chunks
+    from tool_registry import tool_registry
 
 load_dotenv()
 
@@ -74,44 +71,6 @@ The Runbook Analysis value must include Purpose, Immediate Actions,
 Escalation Conditions, Recovery Steps, and Risk Level when runbook evidence is
 available.
 """
-
-
-def _search_with_category(query, category):
-    return [
-        {
-            "category": category,
-            "file": result.get("file"),
-            "chunk_id": result.get("chunk_id"),
-            "content": result.get("content", ""),
-        }
-        for result in search_chunks(query)
-    ]
-
-
-def _search_document(file_name, category):
-    search_client = SearchClient(
-        endpoint=os.getenv("AZURE_SEARCH_ENDPOINT"),
-        index_name=os.getenv("AZURE_SEARCH_INDEX"),
-        credential=AzureKeyCredential(os.getenv("AZURE_SEARCH_KEY")),
-    )
-
-    results = search_client.search(
-        search_text="*",
-        select=["file", "chunk_id", "content"],
-        top=1000,
-    )
-
-    return [
-        {
-            "category": category,
-            "primary": False,
-            "file": result.get("file"),
-            "chunk_id": result.get("chunk_id"),
-            "content": result.get("content", ""),
-        }
-        for result in results
-        if file_name.lower() in str(result.get("file", "")).lower()
-    ]
 
 
 def _mark_primary(evidence):
@@ -358,12 +317,17 @@ def run_investigation(question):
     primary_evidence_items = []
     if incident_id:
         incident_file = _as_file_name(incident_id, "incident")
-        incident_evidence = _search_document(incident_file, "incident")
+        incident_evidence = tool_registry.get_incident(incident_file)
+        if incident_evidence:
+            primary_evidence = incident_evidence[0]
+            primary_evidence_items = _mark_primary(incident_evidence)
 
-    if incident_evidence:
+    if incident_id:
+        initial_evidence = incident_evidence.copy()
+    elif incident_evidence:
         initial_evidence = incident_evidence.copy()
     else:
-        initial_evidence = _search_with_category(question, "incident")
+        initial_evidence = tool_registry.get_incident(question)
 
     deployment_files, runbook_files = _extract_references(initial_evidence)
 
@@ -386,10 +350,7 @@ def run_investigation(question):
     deployment_evidence = []
     if deployment_files or primary_deployment or plan.get("search_deployment"):
         if primary_deployment:
-            deployment_evidence = _search_document(
-                primary_deployment,
-                "deployment",
-            )
+            deployment_evidence = tool_registry.get_deployment(primary_deployment)
             if deployment_evidence:
                 primary_evidence = deployment_evidence[0]
                 primary_evidence_items = _mark_primary(deployment_evidence)
@@ -401,9 +362,8 @@ def run_investigation(question):
             primary_evidence_items = []
         for deployment_file in deployment_files:
             if deployment_file != primary_deployment:
-                additional_deployment_evidence = _search_document(
-                    deployment_file,
-                    "deployment",
+                additional_deployment_evidence = tool_registry.get_deployment(
+                    deployment_file
                 )
                 deployment_evidence.extend(additional_deployment_evidence)
                 initial_evidence.extend(additional_deployment_evidence)
@@ -411,10 +371,7 @@ def run_investigation(question):
     runbook_evidence = []
     if runbook_files or primary_runbook or plan.get("search_runbooks"):
         if primary_runbook:
-            runbook_evidence = _search_document(
-                primary_runbook,
-                "runbook",
-            )
+            runbook_evidence = tool_registry.get_runbook(primary_runbook)
             if runbook_evidence and primary_evidence is None:
                 primary_evidence = runbook_evidence[0]
                 primary_evidence_items = _mark_primary(runbook_evidence)
@@ -422,9 +379,8 @@ def run_investigation(question):
                 initial_evidence.extend(runbook_evidence)
         for runbook_file in runbook_files:
             if runbook_file != primary_runbook:
-                additional_runbook_evidence = _search_document(
-                    runbook_file,
-                    "runbook",
+                additional_runbook_evidence = tool_registry.get_runbook(
+                    runbook_file
                 )
                 runbook_evidence.extend(additional_runbook_evidence)
                 initial_evidence.extend(additional_runbook_evidence)
@@ -440,7 +396,7 @@ def run_investigation(question):
         )
     )
 
-    if selected_deployment:
+    if selected_deployment and not incident_id:
         primary_evidence = selected_deployment
         primary_evidence_items = selected_deployment_items
 
