@@ -1,6 +1,7 @@
 import os
 from pathlib import Path
 
+from azure.core.exceptions import ResourceNotFoundError
 from azure.core.credentials import AzureKeyCredential
 from azure.search.documents import SearchClient
 from azure.search.documents.indexes import SearchIndexClient
@@ -49,14 +50,15 @@ def main():
     )
 
     chunks = []
-    for path in Path("data").rglob("*.md"):
-        text = path.read_text(encoding="utf-8")
-        text = text.replace("\\n", "\n")
+    for file_path in Path("data").rglob("*.md"):
+        file_content = file_path.read_text(encoding="utf-8")
+        file_content = file_content.replace("\\n", "\n")
+        chunks_for_file = chunk_text(file_content)
 
-        for chunk_id, chunk in enumerate(chunk_text(text)):
+        for chunk_id, chunk in enumerate(chunks_for_file):
             chunks.append(
                 {
-                    "file": str(path),
+                    "file": str(file_path),
                     "chunk_id": chunk_id,
                     "content": chunk,
                 }
@@ -126,6 +128,10 @@ def main():
         fields=fields,
         vector_search=vector_search,
     )
+    try:
+        index_client.delete_index(search_index_name)
+    except ResourceNotFoundError:
+        pass
     index_client.create_or_update_index(index)
 
     search_client = SearchClient(

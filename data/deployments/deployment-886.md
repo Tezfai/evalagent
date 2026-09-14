@@ -16,3 +16,9 @@ The unchanged per-worker database pool exhausted the order database connection b
 
 ## Resolution and follow-up
 Concurrency was reverted, the reporting query was isolated, and confirmation events moved to a dedicated topic with age-based alerting. See [checkout-runbook](../runbooks/checkout-runbook.md) and [database-connection-exhaustion](../engineering/database-connection-exhaustion.md).
+
+## Azure DevOps References
+Azure DevOps Work Item: 2
+Azure DevOps Work Item: 3
+Azure DevOps Pull Request: 1
+Azure DevOps Repository: checkout-platform

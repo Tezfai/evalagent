@@ -1,8 +1,10 @@
 import re
 
 try:
+	from .azure_devops_client import azure_devops_client
 	from .search_ai_search import search_chunks, search_document
 except ImportError:
+	from azure_devops_client import azure_devops_client
 	from search_ai_search import search_chunks, search_document
 
 
@@ -91,6 +93,27 @@ class ToolRegistry:
 		# Monitoring
 		return self._with_category(search_document(runbook_file), "runbook")
 
+	def get_work_item(self, work_item_id):
+		"""Retrieve an Azure DevOps work item."""
+		# Azure DevOps Tool
+		# FUTURE MCP:
+		# Replace direct REST calls with MCP tool invocation.
+		return azure_devops_client.get_work_item(work_item_id)
+
+	def get_pull_request(self, repository_id, pr_id):
+		"""Retrieve an Azure DevOps pull request."""
+		# Azure DevOps Tool
+		# FUTURE MCP:
+		# Replace direct REST calls with MCP tool invocation.
+		return azure_devops_client.get_pull_request(repository_id, pr_id)
+
+	def get_release(self, release_id):
+		"""Retrieve an Azure DevOps release."""
+		# Azure DevOps Tool
+		# FUTURE MCP:
+		# Replace direct REST calls with MCP tool invocation.
+		return azure_devops_client.get_release(release_id)
+
 	@staticmethod
 	def _with_category(results, category):
 		return [
@@ -106,3 +129,11 @@ class ToolRegistry:
 
 # Singleton registry used by the investigation runner.
 tool_registry = ToolRegistry()
+
+
+if __name__ == "__main__":
+	print(
+		tool_registry.get_work_item(
+			input("Work Item ID: ").strip()
+		)
+	)

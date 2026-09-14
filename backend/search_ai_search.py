@@ -96,7 +96,7 @@ def search_document(file_name):
     )
     requested_file = os.path.basename(file_name).lower()
     results = search_client.search(
-        search_text=f'"{requested_file}"',
+        search_text="*",
         select=["file", "chunk_id", "content"],
     )
     results = list(results)
@@ -110,9 +110,10 @@ def search_document(file_name):
         print("Candidate files:")
         for result in results:
             print(result.get("file"))
-    results = [
-        result for result in matching_results
-    ]
+    results = sorted(
+        matching_results,
+        key=lambda result: int(result.get("chunk_id", 0)),
+    )
 
     return [
         {

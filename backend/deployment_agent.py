@@ -71,7 +71,18 @@ def analyze_deployment(deployment_file, deployment_content):
 
     response_text = response.choices[0].message.content
     if not response_text:
-        raise ValueError("The deployment analyzer returned an empty response")
+        print("Deployment file:", deployment_file)
+        print("Deployment content length:", len(deployment_content))
+        print("Deployment content preview:")
+        print(deployment_content[:1000])
+        print("Raw deployment analyzer response:")
+        print(response)
+        return {
+            "change_summary": "Analyzer returned no output",
+            "risk_rating": "Unknown",
+            "related_incidents": [],
+            "rollback_status": "Unknown",
+        }
 
     result = json.loads(response_text)
     if not isinstance(result, dict):

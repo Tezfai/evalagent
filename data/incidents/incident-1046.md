@@ -20,3 +20,7 @@ Traffic was shifted to the secondary checkout pool, concurrency was reverted, an
 - [deployment-886](../deployments/deployment-886.md)
 - [checkout-runbook](../runbooks/checkout-runbook.md)
 - Related: [incident-1042](incident-1042.md)
+
+## Related Documents
+Azure DevOps Work Item: 2
+Azure DevOps Pull Request: 1

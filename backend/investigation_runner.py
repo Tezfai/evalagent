@@ -31,6 +31,18 @@ RUNBOOK_PATTERN = re.compile(
     r"\b[a-z0-9][a-z0-9-]*-runbook(?:\.md)?\b",
     re.IGNORECASE,
 )
+AZDO_WORK_ITEM_PATTERN = re.compile(
+    r"Azure DevOps Work Item:\s*(\d+)",
+    re.IGNORECASE,
+)
+AZDO_PULL_REQUEST_PATTERN = re.compile(
+    r"Azure DevOps Pull Request:\s*(\d+)",
+    re.IGNORECASE,
+)
+AZDO_REPOSITORY_PATTERN = re.compile(
+    r"Azure DevOps Repository:\s*([^\s]+)",
+    re.IGNORECASE,
+)
 
 
 REPORT_SECTIONS = (
@@ -43,6 +55,7 @@ REPORT_SECTIONS = (
     "Resolution",
     "Related Documents",
     "Recommendations",
+    "Azure DevOps Evidence",
     "Report Review",
 )
 
@@ -58,6 +71,7 @@ Return a valid JSON object with exactly these keys:
 - Resolution
 - Related Documents
 - Recommendations
+- Azure DevOps Evidence
 - Report Review
 - Primary Evidence
 
@@ -260,6 +274,28 @@ def _format_review_list(values):
     return "\n".join(f"- {value}" for value in values)
 
 
+def _format_azure_devops_evidence(evidence):
+    if not evidence:
+        return "No Azure DevOps evidence available."
+
+    sections = []
+    for item in evidence:
+        identifier_label = (
+            "Pull Request ID"
+            if item.get("type") == "pull_request"
+            else "Work Item ID"
+        )
+        sections.append(
+            f"{identifier_label}: {item.get('id', '')}\n"
+            f"Title: {item.get('title', '')}\n"
+            f"State: {item.get('state', '')}\n"
+            f"Description: {item.get('description', '')}\n"
+            "Referenced By:\n"
+            f"{_format_runbook_list(item.get('referenced_by', []))}"
+        )
+    return "\n\n".join(sections)
+
+
 def _format_report_review(review):
     if not review:
         return "No report review available."
@@ -360,13 +396,73 @@ def run_investigation(question):
         else:
             primary_evidence = None
             primary_evidence_items = []
-        for deployment_file in deployment_files:
-            if deployment_file != primary_deployment:
+        if not primary_deployment:
+            for deployment_file in deployment_files:
                 additional_deployment_evidence = tool_registry.get_deployment(
                     deployment_file
                 )
                 deployment_evidence.extend(additional_deployment_evidence)
                 initial_evidence.extend(additional_deployment_evidence)
+
+    deployment_text = "\n".join(
+        item.get("content", "")
+        for item in deployment_evidence
+    )
+    work_item_ids = set(
+        AZDO_WORK_ITEM_PATTERN.findall(deployment_text)
+    )
+    pull_request_ids = set(
+        AZDO_PULL_REQUEST_PATTERN.findall(deployment_text)
+    )
+    work_item_sources = {}
+    pull_request_sources = {}
+
+    for item in deployment_evidence:
+        deployment_file = item.get("file", "")
+        deployment_name = deployment_file.rsplit("/", 1)[-1]
+        deployment_name = deployment_name.removesuffix(".md")
+
+        for work_item_id in AZDO_WORK_ITEM_PATTERN.findall(
+            item.get("content", "")
+        ):
+            work_item_ids.add(work_item_id)
+            work_item_sources.setdefault(work_item_id, set()).add(
+                deployment_name
+            )
+
+        for pull_request_id in AZDO_PULL_REQUEST_PATTERN.findall(
+            item.get("content", "")
+        ):
+            pull_request_ids.add(pull_request_id)
+            pull_request_sources.setdefault(pull_request_id, set()).add(
+                deployment_name
+            )
+
+    repository_match = AZDO_REPOSITORY_PATTERN.search(deployment_text)
+    repository_id = repository_match.group(1) if repository_match else None
+
+    azure_devops_evidence = []
+    for work_item_id in sorted(work_item_ids):
+        work_item = tool_registry.get_work_item(work_item_id)
+        if work_item:
+            work_item["type"] = "work_item"
+            work_item["referenced_by"] = sorted(
+                work_item_sources.get(work_item_id, set())
+            )
+            azure_devops_evidence.append(work_item)
+
+    if repository_id:
+        for pull_request_id in sorted(pull_request_ids):
+            pull_request = tool_registry.get_pull_request(
+                repository_id,
+                pull_request_id,
+            )
+            if pull_request:
+                pull_request["type"] = "pull_request"
+                pull_request["referenced_by"] = sorted(
+                    pull_request_sources.get(pull_request_id, set())
+                )
+                azure_devops_evidence.append(pull_request)
 
     runbook_evidence = []
     if runbook_files or primary_runbook or plan.get("search_runbooks"):
@@ -497,6 +593,8 @@ def run_investigation(question):
                     f"{json.dumps(deployment_analysis, indent=2) if deployment_analysis else 'None available.'}\n\n"
                     f"Runbook Analysis:\n"
                     f"{json.dumps(runbook_analysis, indent=2) if runbook_analysis else 'None available.'}\n\n"
+                    f"Azure DevOps Evidence:\n"
+                    f"{_format_azure_devops_evidence(azure_devops_evidence)}\n\n"
                     f"{_format_context(primary_evidence_items, supporting_evidence)}"
                 ),
             },
@@ -514,6 +612,9 @@ def run_investigation(question):
         deployment_analysis
     )
     report["Runbook Analysis"] = _format_runbook_analysis(runbook_analysis)
+    report["Azure DevOps Evidence"] = _format_azure_devops_evidence(
+        azure_devops_evidence
+    )
     report_text = _format_report(report, primary_files)
     all_evidence = _deduplicate_evidence(
         [*primary_evidence_items, *initial_evidence]
