@@ -46,6 +46,13 @@ class ToolRegistry:
 				"get_work_item": ("work_item_id",),
 				"get_pull_request": ("repository_id", "pr_id"),
 				"get_release": ("release_id",),
+				"get_application_insights_telemetry": (
+					"service_name",
+					"start_time",
+					"end_time",
+					"incident_id",
+					"max_records",
+				),
 			}[name]
 			return evalagent_mcp_client.call_tool(
 				name,
@@ -70,6 +77,23 @@ class ToolRegistry:
 
 	def get_release(self, release_id):
 		return self._call("get_release", release_id)
+
+	def get_application_insights_telemetry(
+		self,
+		service_name,
+		start_time,
+		end_time,
+		incident_id=None,
+		max_records=200,
+	):
+		return self._call(
+			"get_application_insights_telemetry",
+			service_name,
+			start_time,
+			end_time,
+			incident_id,
+			max_records,
+		)
 
 	@staticmethod
 	def _with_category(results, category):

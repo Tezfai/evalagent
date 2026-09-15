@@ -24,14 +24,22 @@ Analyze the user's question and return only a valid JSON object with these keys:
 - incident_id: the incident number as a string, or null if none is mentioned
 - deployment_id: the deployment number as a string, or null if none is mentioned
 - runbook_reference: the runbook filename or slug as a string, or null if none is mentioned
+- search_application_insights: boolean
+- application_insights_service_name: the exact service name for telemetry, or null if unknown
+- application_insights_start_time: an ISO-8601 UTC start time, or null if not provided
+- application_insights_end_time: an ISO-8601 UTC end time, or null if not provided
 - search_incident: boolean
 - search_deployment: boolean
 - search_runbooks: boolean
 
 If the user does not explicitly mention an incident, infer the most appropriate
 investigation_type from the question. Set search flags to true when the relevant
-source category could help answer the question. Do not include markdown or any
-explanation outside the JSON object.
+source category could help answer the question. Set search_application_insights
+to true only when telemetry is relevant and the question or retrieved context
+provides a service name. Preserve explicit time bounds when provided, but they
+may be null when the caller will supply a default lookback. Do not invent a
+service name. Do not include markdown or any explanation outside the JSON
+object.
 """
 
 

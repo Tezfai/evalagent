@@ -22,7 +22,9 @@ Build an incident investigation assistant for engineering teams. Users ask quest
 - `backend/evalagent_mcp_client.py`: synchronous MCP client that launches the local MCP server over stdio.
 - `backend/evalagent_mcp_server.py`: MCP server exposing the investigation tools; it must not import `tool_registry.py`.
 - `backend/azure_devops_client.py`: direct Azure DevOps REST client using a PAT.
-- Application Insights is the next planned external investigation tool and is not implemented yet.
+- Application Insights is available as an optional external investigation tool
+	when the user opts in; the planner or incident metadata supplies the service
+	and the runner uses explicit ISO-8601 bounds or a configurable lookback.
 - `backend/model.py`: standalone Azure OpenAI chat smoke test; it performs a request at import/run time and is not part of the Streamlit flow.
 - `backend/ingest.py`, `backend/rag.py`, `backend/search.py`, `vector_index.faiss`, and `documents.pkl`: older FAISS/local retrieval implementation. Azure AI Search is the current path; do not modify the legacy path unless explicitly working on migration or fallback support.
 - `data/`: Markdown corpus.
@@ -136,7 +138,15 @@ The MCP server exposes `get_incident`, `get_deployment`, `get_runbook`, `get_wor
 python -m backend.evalagent_mcp_client
 ```
 
-Application Insights is the next planned tool. Add it through the same lower-level implementation -> MCP server tool -> client/registry facade -> runner path. Keep returned telemetry evidence normalized and clearly distinguish retrieved telemetry from unverified hypotheses.
+Application Insights follows the same lower-level implementation -> MCP server
+tool -> client/registry facade -> runner path. The planner can request it with
+`search_application_insights`, `application_insights_service_name`,
+`application_insights_start_time`, and `application_insights_end_time`.
+The runner can also derive the service name from retrieved incident metadata,
+and defaults to the last seven UTC days when the CLI opt-in is enabled and
+explicit bounds are absent. Set `APPLICATIONINSIGHTS_LOOKBACK_DAYS` to change
+the default. Non-empty Azure results are normalized as telemetry evidence;
+empty results are omitted.
 
 ## Known Gaps and Risks
 
@@ -146,7 +156,8 @@ Application Insights is the next planned tool. Add it through the same lower-lev
 - Retrieval uses vector search only; there is no hybrid text/vector ranking, score threshold, reranking, or explicit no-result handling beyond the prompt.
 - Azure DevOps calls require all `AZDO_*` settings and can fail the investigation if configured incompletely or unavailable.
 - MCP mode starts a local server subprocess for each tool call and is currently intended for local development/portfolio use.
-- Application Insights is planned but unavailable until its tool and tests are implemented.
+- Application Insights retrieval is live-resource capable but isolated behind
+	mocked tests; CLI investigations can use the configurable default lookback.
 - The report generator and specialized agents depend on strict JSON output and validate selected enum fields, but there is no schema library or retry/repair loop.
 - Several modules use a dual relative/absolute import fallback so they can run both as package imports and direct scripts. Preserve this compatibility unless deliberately standardizing execution.
 - The data and generated FAISS files are local development artifacts. Do not assume `documents.pkl` or `vector_index.faiss` represent the active Azure Search index.

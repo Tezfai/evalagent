@@ -1,5 +1,7 @@
 import json
+import os
 import re
+from datetime import datetime, timedelta, timezone
 
 from dotenv import load_dotenv
 
@@ -43,6 +45,10 @@ AZDO_PULL_REQUEST_PATTERN = re.compile(
 AZDO_REPOSITORY_PATTERN = re.compile(
     r"Azure DevOps Repository:\s*([^\s]+)",
     re.IGNORECASE,
+)
+SERVICE_PATTERN = re.compile(
+    r"^\s*-\s*\*\*Service:\*\*\s*(\S+)",
+    re.IGNORECASE | re.MULTILINE,
 )
 
 
@@ -129,6 +135,76 @@ def _plan_value(plan, *keys):
         if value:
             return value
     return None
+
+
+def _telemetry_service_name(plan, evidence):
+    planned_service = _plan_value(
+        plan,
+        "application_insights_service_name",
+        "telemetry_service_name",
+    )
+    if planned_service:
+        return str(planned_service).strip()
+
+    for item in evidence:
+        match = SERVICE_PATTERN.search(item.get("content", ""))
+        if match:
+            return match.group(1)
+    return None
+
+
+def _telemetry_time_range(plan, use_default=False):
+    start_time = _plan_value(
+        plan,
+        "application_insights_start_time",
+        "telemetry_start_time",
+    )
+    end_time = _plan_value(
+        plan,
+        "application_insights_end_time",
+        "telemetry_end_time",
+    )
+    if start_time and end_time:
+        return start_time, end_time
+    if not use_default or start_time or end_time:
+        return None, None
+
+    try:
+        lookback_days = float(
+            os.getenv("APPLICATIONINSIGHTS_LOOKBACK_DAYS", "7")
+        )
+    except ValueError as error:
+        raise ValueError(
+            "APPLICATIONINSIGHTS_LOOKBACK_DAYS must be a positive number"
+        ) from error
+    if lookback_days <= 0:
+        raise ValueError(
+            "APPLICATIONINSIGHTS_LOOKBACK_DAYS must be a positive number"
+        )
+
+    end = datetime.now(timezone.utc)
+    start = end - timedelta(days=lookback_days)
+    return (
+        start.isoformat(timespec="seconds").replace("+00:00", "Z"),
+        end.isoformat(timespec="seconds").replace("+00:00", "Z"),
+    )
+
+
+def _application_insights_evidence(telemetry):
+    if not telemetry or not telemetry.get("records"):
+        return []
+
+    service = telemetry.get("service", "unknown")
+    start_time = telemetry.get("start_time", "unknown")
+    end_time = telemetry.get("end_time", "unknown")
+    return [{
+        "source": "application_insights",
+        "category": "telemetry",
+        "primary": False,
+        "file": f"application-insights://{service}",
+        "chunk_id": f"{start_time}/{end_time}",
+        "content": json.dumps(telemetry, indent=2),
+    }]
 
 
 def _basename(value):
@@ -473,7 +549,11 @@ def _generate_report(messages):
     )
 
 
-def run_investigation(question, include_azure_devops=False):
+def run_investigation(
+    question,
+    include_azure_devops=False,
+    include_application_insights=None,
+):
     """Create an investigation plan, gather evidence, and generate a report."""
     plan = create_investigation_plan(question)
     incident_id = _plan_value(plan, "incident_id")
@@ -483,6 +563,10 @@ def run_investigation(question, include_azure_devops=False):
         "runbook_reference",
         "runbook",
         "runbook_id",
+    )
+    telemetry_start_time, telemetry_end_time = _telemetry_time_range(
+        plan,
+        use_default=include_application_insights is True,
     )
 
     incident_evidence = []
@@ -568,6 +652,28 @@ def run_investigation(question, include_azure_devops=False):
             continue
         linked_incident_evidence = tool_registry.get_incident(incident_file)
         initial_evidence.extend(linked_incident_evidence)
+
+    telemetry_evidence = []
+    telemetry_service_name = _telemetry_service_name(plan, initial_evidence)
+    telemetry_opted_in = (
+        plan.get("search_application_insights")
+        if include_application_insights is None
+        else include_application_insights
+    )
+    if (
+        telemetry_opted_in
+        and telemetry_service_name
+        and telemetry_start_time
+        and telemetry_end_time
+    ):
+        telemetry = tool_registry.get_application_insights_telemetry(
+            telemetry_service_name,
+            telemetry_start_time,
+            telemetry_end_time,
+            incident_id,
+        )
+        telemetry_evidence = _application_insights_evidence(telemetry)
+        initial_evidence.extend(telemetry_evidence)
 
     azure_devops_evidence = []
     if include_azure_devops:
@@ -665,6 +771,10 @@ def run_investigation(question, include_azure_devops=False):
     if primary_evidence is None and incident_evidence:
         primary_evidence = incident_evidence[0]
         primary_evidence_items = _mark_primary(incident_evidence)
+
+    if primary_evidence is None and telemetry_evidence:
+        primary_evidence = telemetry_evidence[0]
+        primary_evidence_items = _mark_primary(telemetry_evidence)
 
     deployment_analysis = None
     deployment_evidence_item = selected_deployment
@@ -819,10 +929,14 @@ if __name__ == "__main__":
     include_azure_devops = input(
         "Would you like to include Azure DevOps work item and pull request evidence? (y/n): "
     ).strip().lower() == "y"
+    include_application_insights = input(
+        "Would you like to include Application Insights telemetry? (y/n): "
+    ).strip().lower() == "y"
     user_question = input("Question: ")
     report_text, evidence = run_investigation(
         user_question,
         include_azure_devops=include_azure_devops,
+        include_application_insights=include_application_insights,
     )
 
     print("\nInvestigation Report:\n")

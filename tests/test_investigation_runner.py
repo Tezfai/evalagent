@@ -2,6 +2,7 @@ import json
 import io
 import asyncio
 import unittest
+from datetime import datetime
 from contextlib import redirect_stdout
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -419,6 +420,109 @@ class InvestigationRunnerTests(unittest.TestCase):
         self.assertIn("Work Item ID: 1234", captured_critic_evidence["value"])
         self.assertIn("Incident facts.", captured_critic_evidence["value"])
 
+    def test_application_insights_uses_incident_service_and_nonempty_results(self):
+        plan = {
+            "incident_id": "1042",
+            "deployment_id": None,
+            "runbook_reference": None,
+            "search_deployment": False,
+            "search_runbooks": False,
+            "search_application_insights": True,
+            "application_insights_service_name": None,
+            "application_insights_start_time": "2026-09-14T00:00:00Z",
+            "application_insights_end_time": "2026-09-15T00:00:00Z",
+        }
+        incident = [{
+            "file": "incident-1042.md",
+            "chunk_id": 0,
+            "content": "- **Service:** checkout-service\nIncident facts.",
+            "category": "incident",
+            "primary": False,
+        }]
+        telemetry = {
+            "source": "application_insights",
+            "category": "telemetry",
+            "service": "checkout-service",
+            "incident_id": "1042",
+            "start_time": "2026-09-14T00:00:00.000Z",
+            "end_time": "2026-09-15T00:00:00.000Z",
+            "records": [{"telemetry_type": "request", "success": False}],
+        }
+        report_prompt = {}
+
+        def create_report(**kwargs):
+            report_prompt["value"] = kwargs["messages"][1]["content"]
+            return self._response(json.dumps({}))
+
+        with (
+            patch.object(
+                investigation_runner,
+                "create_investigation_plan",
+                return_value=plan,
+            ),
+            patch.object(
+                investigation_runner.tool_registry,
+                "get_incident",
+                return_value=incident,
+            ),
+            patch.object(
+                investigation_runner.tool_registry,
+                "get_application_insights_telemetry",
+                return_value=telemetry,
+            ) as get_telemetry,
+            patch.object(
+                investigation_runner.client.chat.completions,
+                "create",
+                side_effect=create_report,
+            ),
+            patch.object(investigation_runner, "review_report", return_value=None),
+        ):
+            report_text, evidence = investigation_runner.run_investigation(
+                "Investigate incident 1042 with telemetry",
+                include_application_insights=True,
+            )
+
+        get_telemetry.assert_called_once_with(
+            "checkout-service",
+            "2026-09-14T00:00:00Z",
+            "2026-09-15T00:00:00Z",
+            "1042",
+        )
+        telemetry_items = [
+            item for item in evidence if item.get("category") == "telemetry"
+        ]
+        self.assertEqual(len(telemetry_items), 1)
+        self.assertIn('"telemetry_type": "request"', telemetry_items[0]["content"])
+        self.assertIn("checkout-service", report_prompt["value"])
+        self.assertIsInstance(report_text, str)
+
+    def test_empty_application_insights_results_are_not_evidence(self):
+        self.assertEqual(
+            investigation_runner._application_insights_evidence(
+                {"service": "service-a", "records": []}
+            ),
+            [],
+        )
+
+    def test_application_insights_default_time_range_is_configurable(self):
+        with patch.dict(
+            "os.environ",
+            {"APPLICATIONINSIGHTS_LOOKBACK_DAYS": "2"},
+            clear=False,
+        ):
+            start_time, end_time = investigation_runner._telemetry_time_range(
+                {},
+                use_default=True,
+            )
+
+        start = datetime.fromisoformat(start_time.replace("Z", "+00:00"))
+        end = datetime.fromisoformat(end_time.replace("Z", "+00:00"))
+        self.assertAlmostEqual(
+            (end - start).total_seconds(),
+            2 * 86400,
+            delta=2,
+        )
+
 
 class DeploymentAgentTests(unittest.TestCase):
     @staticmethod
@@ -524,6 +628,7 @@ class EvalagentMcpServerTests(unittest.TestCase):
                 "get_work_item",
                 "get_pull_request",
                 "get_release",
+                "get_application_insights_telemetry",
             ],
         )
 
@@ -554,6 +659,11 @@ class EvalagentMcpServerTests(unittest.TestCase):
                 "get_pull_request",
                 return_value={"id": 1},
             ) as get_pull_request,
+            patch.object(
+                evalagent_mcp_server.tool_implementations,
+                "get_application_insights_telemetry",
+                return_value={"records": [{"telemetry_type": "trace"}]},
+            ) as get_telemetry,
         ):
             self.assertEqual(
                 evalagent_mcp_server.get_incident("1042"),
@@ -575,12 +685,29 @@ class EvalagentMcpServerTests(unittest.TestCase):
                 evalagent_mcp_server.get_pull_request("checkout-platform", "1"),
                 {"id": 1},
             )
+            self.assertEqual(
+                evalagent_mcp_server.get_application_insights_telemetry(
+                    "checkout-service",
+                    "2026-09-14T00:00:00Z",
+                    "2026-09-15T00:00:00Z",
+                    "1042",
+                    50,
+                ),
+                {"records": [{"telemetry_type": "trace"}]},
+            )
 
         get_incident.assert_called_once_with("1042")
         get_deployment.assert_called_once_with("886")
         get_runbook.assert_called_once_with("checkout-runbook")
         get_work_item.assert_called_once_with("2")
         get_pull_request.assert_called_once_with("checkout-platform", "1")
+        get_telemetry.assert_called_once_with(
+            "checkout-service",
+            "2026-09-14T00:00:00Z",
+            "2026-09-15T00:00:00Z",
+            "1042",
+            50,
+        )
 
     def test_server_has_no_registry_dependency(self):
         self.assertFalse(hasattr(evalagent_mcp_server, "tool_registry"))
@@ -615,6 +742,34 @@ class EvalagentMcpClientTests(unittest.TestCase):
         call_tool.assert_called_once_with(
             "get_incident",
             incident_id="1042",
+        )
+
+    def test_mcp_provider_forwards_application_insights_arguments(self):
+        telemetry = {"records": [{"telemetry_type": "request"}]}
+        with (
+            patch.dict("os.environ", {"EVALAGENT_TOOL_PROVIDER": "mcp"}),
+            patch.object(
+                evalagent_mcp_client,
+                "call_tool",
+                return_value=telemetry,
+            ) as call_tool,
+        ):
+            result = ToolRegistry().get_application_insights_telemetry(
+                "checkout-service",
+                "2026-09-14T00:00:00Z",
+                "2026-09-15T00:00:00Z",
+                "1042",
+                50,
+            )
+
+        self.assertEqual(result, telemetry)
+        call_tool.assert_called_once_with(
+            "get_application_insights_telemetry",
+            service_name="checkout-service",
+            start_time="2026-09-14T00:00:00Z",
+            end_time="2026-09-15T00:00:00Z",
+            incident_id="1042",
+            max_records=50,
         )
 
     def test_investigation_runner_uses_mcp_provider_and_preserves_contract(self):

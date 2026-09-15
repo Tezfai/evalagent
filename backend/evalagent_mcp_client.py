@@ -16,6 +16,7 @@ TOOL_NAMES = (
     "get_work_item",
     "get_pull_request",
     "get_release",
+    "get_application_insights_telemetry",
 )
 
 
@@ -120,6 +121,23 @@ def get_pull_request(repository_id, pr_id):
 
 def get_release(release_id):
     return call_tool("get_release", release_id=release_id)
+
+
+def get_application_insights_telemetry(
+    service_name,
+    start_time,
+    end_time,
+    incident_id=None,
+    max_records=200,
+):
+    return call_tool(
+        "get_application_insights_telemetry",
+        service_name=service_name,
+        start_time=start_time,
+        end_time=end_time,
+        incident_id=incident_id,
+        max_records=max_records,
+    )
 
 
 if __name__ == "__main__":

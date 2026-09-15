@@ -30,7 +30,7 @@ flowchart TD
     Server --> Implementations
     Implementations --> Search
     Implementations --> DevOps[azure_devops_client.py]
-    Implementations -. future .-> AppInsights[Application Insights tool]
+    Implementations --> AppInsights[Application Insights tool]
     Runner --> Deployment[deployment_agent.py]
     Runner --> Runbook[runbook_agent.py]
     Runner --> Report[Azure OpenAI report generation]
@@ -48,7 +48,7 @@ The richer path supports a temporary provider switch:
 - `EVALAGENT_TOOL_PROVIDER=direct` (default): `ToolRegistry` calls `tool_implementations.py` directly.
 - `EVALAGENT_TOOL_PROVIDER=mcp`: `ToolRegistry` calls `evalagent_mcp_client.py`, which launches the local stdio MCP server.
 
-The investigation runner still decides which tools to call. MCP provides the tool boundary; it does not enable autonomous LLM tool selection.
+The investigation runner still decides which tools to call. MCP provides the tool boundary; it does not enable autonomous LLM tool selection. Application Insights is selected after opt-in when the plan or incident evidence supplies a service. Explicit ISO-8601 bounds are honored; otherwise the runner uses its configurable UTC lookback.
 
 The browser path does not currently call `run_investigation`. A fix must first establish which path the requested behavior belongs to.
 
@@ -148,6 +148,10 @@ Creates an investigation plan using the GPT-5-mini deployment. The planner must 
 - `incident_id`
 - `deployment_id`
 - `runbook_reference`
+- `search_application_insights`
+- `application_insights_service_name`
+- `application_insights_start_time`
+- `application_insights_end_time`
 - `search_incident`
 - `search_deployment`
 - `search_runbooks`
@@ -168,10 +172,11 @@ Its `run_investigation(question)` function:
 6. Analyzes deployment evidence.
 7. Analyzes runbook evidence.
 8. Extracts Azure DevOps work item, pull request, and repository markers.
-9. Retrieves matching Azure DevOps data when the CLI opt-in is enabled and valid references exist.
-10. Generates a structured report with Azure OpenAI.
-11. Reviews the report with the critic agent.
-12. Returns `(report_text, evidence)`.
+9. Retrieves Application Insights telemetry after opt-in when the plan or incident includes a service; non-empty results become normalized supporting evidence.
+10. Retrieves matching Azure DevOps data when the CLI opt-in is enabled and valid references exist.
+11. Generates a structured report with Azure OpenAI.
+12. Reviews the report with the critic agent.
+13. Returns `(report_text, evidence)`.
 
 Important evidence behavior:
 
@@ -260,12 +265,15 @@ Exposes these MCP tools:
 - `get_work_item`
 - `get_pull_request`
 - `get_release`
+- `get_application_insights_telemetry`
 
 Each MCP tool delegates to `tool_implementations.py`. The server does not call the MCP-backed registry.
 
-#### Planned Application Insights tool
+#### Application Insights tool
 
-Application Insights is the next planned investigation integration. It should be added as another MCP tool and lower-level implementation, for example a narrowly scoped query tool for retrieving relevant telemetry or traces. Keep it opt-in, evidence-shaped, mockable, and separate from report generation. Do not treat Application Insights as available evidence until the tool returns actual records during the current investigation.
+Application Insights is an opt-in MCP tool backed by the lower-level retrieval
+implementation. It queries the selected service and time range, returns
+normalized telemetry, and contributes evidence only when Azure returns records.
 
 Document methods:
 
@@ -458,7 +466,7 @@ Do not run `backend/ingest_ai_search.py` during ordinary validation because it d
 - Exact document retrieval scans all documents and filters locally.
 - LLM JSON responses use manual validation rather than a shared schema or retry mechanism.
 - The MCP client starts a new local server subprocess for each tool call; a persistent session would reduce overhead.
-- MCP mode currently routes Search and Azure DevOps tools through the same local MCP server; Application Insights is planned but not implemented.
+- MCP mode routes Search, Azure DevOps, and Application Insights tools through the same local MCP server.
 - MCP transport is local stdio and does not yet provide remote authentication or authorization.
 - Tool schemas use ordinary Python dictionaries rather than shared strict domain models.
 - Azure DevOps still uses a PAT locally; production use would need managed identity or a dedicated secret broker.

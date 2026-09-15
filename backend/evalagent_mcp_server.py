@@ -12,7 +12,7 @@ mcp = MCPServer(
     name="evalagent-investigation-tools",
     description=(
         "Investigation retrieval tools for incidents, deployments, runbooks, "
-        "and Azure DevOps evidence."
+        "Azure DevOps, and Application Insights evidence."
     ),
 )
 
@@ -51,6 +51,24 @@ def get_pull_request(repository_id: str, pr_id: str) -> dict:
 def get_release(release_id: str) -> dict:
     """Retrieve an Azure DevOps release for future investigation workflows."""
     return tool_implementations.get_release(release_id)
+
+
+@mcp.tool()
+def get_application_insights_telemetry(
+    service_name: str,
+    start_time: str,
+    end_time: str,
+    incident_id: str | None = None,
+    max_records: int = 200,
+) -> dict:
+    """Retrieve normalized Application Insights telemetry for a time range."""
+    return tool_implementations.get_application_insights_telemetry(
+        service_name,
+        start_time,
+        end_time,
+        incident_id,
+        max_records,
+    )
 
 
 if __name__ == "__main__":
