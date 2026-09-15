@@ -53,36 +53,44 @@ def analyze_deployment(deployment_file, deployment_content):
     if not deployment_content or not str(deployment_content).strip():
         raise ValueError("deployment_content must not be empty")
 
+    messages = [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {
+            "role": "user",
+            "content": (
+                f"Deployment file: {str(deployment_file).strip()}\n\n"
+                f"Deployment evidence:\n{str(deployment_content).strip()}"
+            ),
+        },
+    ]
+
     response = client.chat.completions.create(
         model=GPT5_MINI_DEPLOYMENT,
-        messages=[
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {
-                "role": "user",
-                "content": (
-                    f"Deployment file: {str(deployment_file).strip()}\n\n"
-                    f"Deployment evidence:\n{str(deployment_content).strip()}"
-                ),
-            },
-        ],
+        messages=messages,
         response_format={"type": "json_object"},
-        max_completion_tokens=1200,
+        max_completion_tokens=3000,
     )
 
     response_text = response.choices[0].message.content
+    if (
+        getattr(response.choices[0], "finish_reason", None) == "length"
+        and not response_text
+    ):
+        response = client.chat.completions.create(
+            model=GPT5_MINI_DEPLOYMENT,
+            messages=messages,
+            response_format={"type": "json_object"},
+            max_completion_tokens=5000,
+        )
+        response_text = response.choices[0].message.content
+
     if not response_text:
-        print("Deployment file:", deployment_file)
-        print("Deployment content length:", len(deployment_content))
-        print("Deployment content preview:")
-        print(deployment_content[:1000])
-        print("Raw deployment analyzer response:")
-        print(response)
-        return {
-            "change_summary": "Analyzer returned no output",
-            "risk_rating": "Unknown",
-            "related_incidents": [],
-            "rollback_status": "Unknown",
-        }
+        print(
+            "Deployment analyzer: "
+            f"finish_reason={getattr(response.choices[0], 'finish_reason', None)}, "
+            f"has_content=False"
+        )
+        return None
 
     result = json.loads(response_text)
     if not isinstance(result, dict):

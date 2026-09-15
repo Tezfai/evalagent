@@ -47,6 +47,11 @@ retrieving deployment logs, reviewing database metrics, or collecting a
 rollback timeline. Return an empty list when no next steps are supported by
 the supplied report and evidence.
 
+Return no more than five highest-priority missing_evidence items and five
+highest-priority recommended_next_steps. Keep unsupported_claims focused on
+claims that are not supported by the supplied evidence. Keep review_summary
+to one short paragraph.
+
 Do not use outside knowledge or infer facts beyond the supplied evidence. If no
 missing evidence or unsupported claims can be identified, return an empty list.
 Do not include markdown or explanation outside the JSON object.
@@ -115,6 +120,10 @@ def review_report(report_text, evidence):
         key: result.get(key, [] if key in LIST_FIELDS else "")
         for key in EXPECTED_KEYS
     }
+    normalized["missing_evidence"] = normalized["missing_evidence"][:5]
+    normalized["recommended_next_steps"] = normalized[
+        "recommended_next_steps"
+    ][:5]
     if normalized["confidence"] not in VALID_CONFIDENCE:
         raise ValueError("confidence must be Low, Medium, or High")
     if normalized["report_quality"] not in VALID_REPORT_QUALITY:
