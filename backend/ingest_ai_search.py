@@ -18,6 +18,11 @@ from azure.search.documents.indexes.models import (
 from dotenv import load_dotenv
 from openai import AzureOpenAI
 
+try:
+    from .blob_storage_client import BlobStorageClient
+except ImportError:
+    from blob_storage_client import BlobStorageClient
+
 load_dotenv()
 
 
@@ -49,10 +54,19 @@ def main():
         api_version="2024-12-01-preview",
     )
 
+    storage_client = BlobStorageClient()
+    blob_documents = storage_client.download_markdown_documents()
+
+    if not blob_documents:
+        raise ValueError(
+            f"No Markdown documents found in Azure Blob container '{storage_client.container_name}'. "
+            "Please run scripts/upload_data_to_blob.py to upload data first."
+        )
+
     chunks = []
-    for file_path in Path("data").rglob("*.md"):
-        file_content = file_path.read_text(encoding="utf-8")
-        file_content = file_content.replace("\\n", "\n")
+    for doc in blob_documents:
+        file_path = doc["file"]
+        file_content = doc["content"]
         chunks_for_file = chunk_text(file_content)
 
         for chunk_id, chunk in enumerate(chunks_for_file):
@@ -63,9 +77,6 @@ def main():
                     "content": chunk,
                 }
             )
-
-    if not chunks:
-        raise ValueError("No Markdown documents were found in the data folder")
 
     for chunk in chunks:
         response = openai_client.embeddings.create(

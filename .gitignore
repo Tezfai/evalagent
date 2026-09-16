@@ -1,1 +1,42 @@
+# Environment variables and secrets
 .env
+.env.*
+!.env.example
+
+# Context guides
+PROJECT_CONTEXT.md
+PROJECT_CONTEXT.MD
+ARCHITECTURE_GUIDE.md
+ARCHITECTURE_GUIDE.MD
+
+# Python cache and bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Virtual environments
+venv/
+.venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# Testing & Coverage
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Temporary and local artifacts
+documents.pkl
+vector_index.faiss
+*.log
+*.tmp
+.DS_Store
+Thumbs.db
+
+# VS Code / IDE settings
+.vscode/
+.idea/
