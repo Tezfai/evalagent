@@ -166,7 +166,7 @@ AZURE_SEARCH_KEY=<your-search-admin-key>
 AZURE_SEARCH_INDEX=incident-index
 
 # Azure Blob Storage
-AZURE_STORAGE_ACCOUNT_NAME=incidentxagentstorage
+AZURE_STORAGE_ACCOUNT_NAME=<your-storage-account-name>
 AZURE_STORAGE_CONTAINER_NAME=evalagent-documents
 
 # Optional: Azure DevOps & Telemetry
@@ -211,16 +211,12 @@ The project includes an automated sync script ([scripts/upload_data_to_blob.py](
 
 3. **Verify Uploaded Blobs in Azure**:
    ```bash
-   az storage blob list --account-name incidentxagentstorage --container-name evalagent-documents --auth-mode login --output table
+   az storage blob list --account-name <your-storage-account-name> --container-name evalagent-documents --auth-mode login --output table
    ```
 
 ### Step 2: Ingest from Blob Storage into Azure AI Search
 
 Once the documents are stored in Azure Blob Storage, run the ingestion pipeline. It downloads the corpus directly from the Blob container in memory, creates chunk embeddings via Azure OpenAI, and builds/updates the Azure AI Search index:
-
-```bash
-python backend/ingest_ai_search.py
-```
 
 ```bash
 python backend/ingest_ai_search.py
