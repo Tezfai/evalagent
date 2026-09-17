@@ -27,11 +27,16 @@ JSON object with exactly these keys:
 - risks: a list of risks explicitly supported by the evidence
 - related_incidents: a list of incident identifiers explicitly supported by the evidence
 - rollback_status: the rollback status explicitly supported by the evidence, or an empty string
-- risk_rating: exactly one of Low, Medium, or High, based only on the evidence
+- risk_rating: Low, Medium, or High only if the evidence explicitly states a
+    risk or risk rating for this deployment. Otherwise use exactly
+    "Not established by retrieved evidence".
 
-Do not infer facts from outside the evidence. If a field is not established by
-the evidence, use an empty string or an empty list as appropriate. Do not
-include markdown or explanation outside the JSON object.
+Do not infer facts from outside the evidence. Incident severity labels (for
+example SEV-1, SEV-2) describe incident impact, not deployment risk; never
+convert a severity label, deployment type, or general judgment into a
+risk_rating. If a field is not established by the evidence, use an empty
+string or an empty list as appropriate. Do not include markdown or
+explanation outside the JSON object.
 """
 
 
@@ -43,7 +48,8 @@ EXPECTED_KEYS = (
     "rollback_status",
     "risk_rating",
 )
-VALID_RISK_RATINGS = {"Low", "Medium", "High"}
+NOT_ESTABLISHED = "Not established by retrieved evidence"
+VALID_RISK_RATINGS = {"Low", "Medium", "High", NOT_ESTABLISHED}
 
 
 def analyze_deployment(deployment_file, deployment_content):
@@ -99,7 +105,10 @@ def analyze_deployment(deployment_file, deployment_content):
     normalized = {key: result.get(key, "" if key not in {"risks", "related_incidents"} else [])
                   for key in EXPECTED_KEYS}
     if normalized["risk_rating"] not in VALID_RISK_RATINGS:
-        raise ValueError("risk_rating must be Low, Medium, or High")
+        raise ValueError(
+            "risk_rating must be Low, Medium, High, or "
+            f"'{NOT_ESTABLISHED}'"
+        )
 
     return normalized
 

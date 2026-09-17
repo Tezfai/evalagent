@@ -86,6 +86,14 @@ Each value must be a concise markdown-ready string. Clearly state when the
 available evidence does not establish an answer. Do not invent facts.
 Focus the report on the PRIMARY EVIDENCE.
 Supporting documents provide additional context only.
+Do not state that something did not occur (for example, that no data was
+lost, or that no impact occurred) unless the evidence explicitly confirms it.
+Absence of evidence is not evidence of absence; if a negative outcome is not
+explicitly confirmed, say it is not established rather than asserting it did
+not happen.
+A fact stated only in supporting evidence about a different incident or
+document must not be attributed to the primary incident unless the primary
+evidence, or evidence explicitly shared between them, establishes it too.
 The Deployment Analysis value must include Change Summary, Risk Rating,
 Related Incidents, and Rollback Status when deployment evidence is available.
 The Runbook Analysis value must include Purpose, Immediate Actions,
@@ -272,7 +280,11 @@ def _extract_references(evidence, primary_evidence=None):
             for runbook in RUNBOOK_PATTERN.findall(document_text)
         ]
     )
-    return deployment_files, incident_files, runbook_files
+    categorized_files = set(deployment_files) | set(incident_files) | set(runbook_files)
+    other_files = _ordered_unique(
+        name for name in linked_names if name not in categorized_files
+    )
+    return deployment_files, incident_files, runbook_files, other_files
 
 
 def _select_primary_deployment(evidence, deployment_id):
@@ -306,15 +318,21 @@ def _format_evidence(evidence):
     return "\n\n".join(formatted_evidence)
 
 
-def _limit_supporting_evidence(evidence, maximum_documents=3):
+def _limit_supporting_evidence(evidence, maximum_documents=3, priority_files=None):
+    """Cap unique supporting documents, without dropping a document that a
+    report analysis section (e.g. Runbook Analysis) is already citing."""
+    priority_basenames = {
+        _basename(name) for name in (priority_files or ()) if name
+    }
     supporting_evidence = []
     included_files = set()
 
     for item in evidence:
         file_name = item.get("file")
+        is_priority = _basename(file_name) in priority_basenames
         if file_name not in included_files:
-            if len(included_files) >= maximum_documents:
-                break
+            if not is_priority and len(included_files) >= maximum_documents:
+                continue
             included_files.add(file_name)
         supporting_evidence.append(item)
 
@@ -412,8 +430,14 @@ def _format_runbook_list(values):
     return "\n".join(f"- {value}" for value in values)
 
 
-def _format_runbook_analysis(analysis):
+def _format_runbook_analysis(analysis, unretrieved_runbook=None):
     if not analysis:
+        if unretrieved_runbook:
+            return (
+                f"Runbook `{unretrieved_runbook}` was referenced but not "
+                "retrieved. Its procedures, thresholds, escalation "
+                "conditions, and recovery steps cannot be verified."
+            )
         return "No runbook evidence available."
 
     return (
@@ -474,6 +498,21 @@ def _format_azure_devops_evidence(evidence):
             f"{_format_runbook_list(item.get('referenced_by', []))}"
         )
     return "\n\n".join(sections)
+
+
+def _format_related_documents(retrieved_files, unretrieved_references):
+    """Render Related Documents from code-computed file sets only.
+
+    The LLM must not author this list itself, since freeform prose can
+    invent or truncate document identifiers (for example writing
+    "deployment-88.md" instead of "deployment-882.md").
+    """
+    return (
+        "Retrieved:\n"
+        f"{_format_runbook_list(sorted(retrieved_files))}\n\n"
+        "Referenced but Not Retrieved:\n"
+        f"{_format_runbook_list(unretrieved_references)}"
+    )
 
 
 def _format_report_review(review):
@@ -597,7 +636,7 @@ def run_investigation(
     else:
         initial_evidence = tool_registry.get_incident(question)
 
-    deployment_files, incident_files, runbook_files = _extract_references(
+    deployment_files, incident_files, runbook_files, other_files = _extract_references(
         initial_evidence,
         primary_evidence=primary_evidence,
     )
@@ -642,7 +681,7 @@ def run_investigation(
                 deployment_evidence.extend(additional_deployment_evidence)
                 initial_evidence.extend(additional_deployment_evidence)
 
-    deployment_files, incident_files, runbook_files = _extract_references(
+    deployment_files, incident_files, runbook_files, other_files = _extract_references(
         initial_evidence,
         primary_evidence=primary_evidence,
     )
@@ -847,7 +886,14 @@ def run_investigation(
         primary_evidence_items
     )
     supporting_evidence = _deduplicate_evidence(supporting_evidence)
-    supporting_evidence = _limit_supporting_evidence(supporting_evidence)
+    supporting_evidence = _limit_supporting_evidence(
+        supporting_evidence,
+        priority_files=[
+            item.get("file")
+            for item in (runbook_evidence_item, deployment_evidence_item)
+            if item
+        ],
+    )
 
     if primary_evidence is None:
         primary_evidence_items = []
@@ -860,13 +906,37 @@ def run_investigation(
         for item in selected_factual_evidence
     }
     referenced_files = _ordered_unique(
-        [*deployment_files, *incident_files, *runbook_files]
+        [*deployment_files, *incident_files, *runbook_files, *other_files]
     )
     unretrieved_references = [
         file_name
         for file_name in referenced_files
         if _basename(file_name) not in retrieved_files
     ]
+
+    # A runbook analysis is only grounded if its source document survived into
+    # the final evidence set. If it was dropped (e.g. by supporting-evidence
+    # limiting) it must not be reported as retrieved/analyzed.
+    runbook_reference_unretrieved = None
+    if runbook_analysis and runbook_evidence_item:
+        if _basename(runbook_evidence_item.get("file", "")) not in retrieved_files:
+            runbook_reference_unretrieved = runbook_evidence_item.get("file")
+            runbook_analysis = None
+
+    # A runbook can also be referenced without ever being retrieved at all
+    # (e.g. search found nothing for it); surface that plainly too.
+    if runbook_analysis is None and runbook_reference_unretrieved is None:
+        referenced_runbook_files = _ordered_unique(
+            ([primary_runbook] if primary_runbook else []) + runbook_files
+        )
+        runbook_reference_unretrieved = next(
+            (
+                file_name
+                for file_name in referenced_runbook_files
+                if _basename(file_name) not in retrieved_files
+            ),
+            None,
+        )
 
     if primary_evidence:
         print(f"Primary Evidence: {primary_evidence['file']}")
@@ -901,7 +971,12 @@ def run_investigation(
         deployment_analysis,
         has_evidence=deployment_evidence_item is not None,
     )
-    report["Runbook Analysis"] = _format_runbook_analysis(runbook_analysis)
+    report["Runbook Analysis"] = _format_runbook_analysis(
+        runbook_analysis, runbook_reference_unretrieved
+    )
+    report["Related Documents"] = _format_related_documents(
+        retrieved_files, unretrieved_references
+    )
     report["Azure DevOps Evidence"] = _format_azure_devops_evidence(
         azure_devops_evidence
     )

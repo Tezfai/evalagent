@@ -29,11 +29,15 @@ object with exactly these keys:
 - immediate_actions: a list of immediate actions explicitly supported by the runbook
 - escalation_conditions: a list of escalation conditions explicitly supported by the runbook
 - recovery_steps: a list of recovery steps explicitly supported by the runbook
-- risk_level: exactly one of Low, Medium, or High, based only on the runbook
+- risk_level: Low, Medium, or High only if the runbook explicitly states a
+    risk or risk level. Otherwise use exactly
+    "Not established by retrieved evidence".
 
-Do not infer facts from outside the supplied runbook. If a field is not
-established by the runbook, use an empty string or an empty list as appropriate.
-Do not include markdown or explanation outside the JSON object.
+Do not infer facts from outside the supplied runbook. Incident severity labels
+(for example SEV-1, SEV-2) describe incident impact, not runbook risk; never
+convert a severity label or general judgment into a risk_level. If a field is
+not established by the runbook, use an empty string or an empty list as
+appropriate. Do not include markdown or explanation outside the JSON object.
 """
 
 EXPECTED_KEYS = (
@@ -49,7 +53,8 @@ LIST_FIELDS = {
     "escalation_conditions",
     "recovery_steps",
 }
-VALID_RISK_LEVELS = {"Low", "Medium", "High"}
+NOT_ESTABLISHED = "Not established by retrieved evidence"
+VALID_RISK_LEVELS = {"Low", "Medium", "High", NOT_ESTABLISHED}
 
 
 def _purpose_from_runbook(runbook_content):
@@ -158,7 +163,9 @@ def analyze_runbook(runbook_file, runbook_content):
     if not str(normalized["purpose"]).strip():
         normalized["purpose"] = _purpose_from_runbook(runbook_content)
     if normalized["risk_level"] not in VALID_RISK_LEVELS:
-        raise ValueError("risk_level must be Low, Medium, or High")
+        raise ValueError(
+            f"risk_level must be Low, Medium, High, or '{NOT_ESTABLISHED}'"
+        )
 
     return normalized
 

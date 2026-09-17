@@ -1,4 +1,5 @@
 import os
+import sys
 
 from azure.core.credentials import AzureKeyCredential
 from azure.search.documents import SearchClient
@@ -107,9 +108,10 @@ def search_document(file_name):
         == requested_file
     ]
     if not matching_results:
-        print("Candidate files:")
+        # stdout is reserved for MCP stdio JSON-RPC traffic; diagnostics go to stderr.
+        print("Candidate files:", file=sys.stderr)
         for result in results:
-            print(result.get("file"))
+            print(result.get("file"), file=sys.stderr)
     results = sorted(
         matching_results,
         key=lambda result: int(result.get("chunk_id", 0)),

@@ -1,0 +1,92 @@
+[
+  {
+    "id": "incident-1042",
+    "question": "Investigate incident 1042",
+    "expected_primary_evidence": "incident-1042.md",
+    "expected_deployment": "deployment-882.md",
+    "expected_runbook": "redis-cache-runbook.md",
+    "expected_service": "checkout-service",
+    "root_cause_keywords": ["redis", "connection pool", "deployment 882"]
+  },
+  {
+    "id": "incident-1043",
+    "question": "Investigate incident 1043",
+    "expected_primary_evidence": "incident-1043.md",
+    "expected_deployment": "deployment-883.md",
+    "expected_runbook": "payment-runbook.md",
+    "expected_service": "payment-service",
+    "root_cause_keywords": ["certificate", "truststore", "TLS"]
+  },
+  {
+    "id": "incident-1044",
+    "question": "Investigate incident 1044",
+    "expected_primary_evidence": "incident-1044.md",
+    "expected_deployment": "deployment-884.md",
+    "expected_runbook": "inventory-runbook.md",
+    "expected_service": "inventory-service",
+    "root_cause_keywords": ["asynchronous", "acknowledge", "reservation"]
+  },
+  {
+    "id": "incident-1045",
+    "question": "Investigate incident 1045",
+    "expected_primary_evidence": "incident-1045.md",
+    "expected_deployment": "deployment-885.md",
+    "expected_runbook": null,
+    "expected_service": "recommendation-service",
+    "root_cause_keywords": ["feature-vector", "warehouse", "cohort"]
+  },
+  {
+    "id": "incident-1046",
+    "question": "Investigate incident 1046",
+    "expected_primary_evidence": "incident-1046.md",
+    "expected_deployment": "deployment-886.md",
+    "expected_runbook": "checkout-runbook.md",
+    "expected_service": "checkout-service",
+    "root_cause_keywords": ["connection", "pool", "deployment 886"]
+  },
+  {
+    "id": "incident-1047",
+    "question": "Investigate incident 1047",
+    "expected_primary_evidence": "incident-1047.md",
+    "expected_deployment": "deployment-883.md",
+    "expected_runbook": "payment-runbook.md",
+    "expected_service": "payment-service",
+    "root_cause_keywords": ["vault", "enrichment", "backoff"]
+  },
+  {
+    "id": "incident-1048",
+    "question": "Investigate incident 1048",
+    "expected_primary_evidence": "incident-1048.md",
+    "expected_deployment": "deployment-882.md",
+    "expected_runbook": "redis-cache-runbook.md",
+    "expected_service": "checkout-service",
+    "root_cause_keywords": ["eviction", "namespace", "TTL"]
+  },
+  {
+    "id": "incident-1049",
+    "question": "Investigate incident 1049",
+    "expected_primary_evidence": "incident-1049.md",
+    "expected_deployment": "deployment-884.md",
+    "expected_runbook": "inventory-runbook.md",
+    "expected_service": "inventory-service",
+    "root_cause_keywords": ["lock-renewal", "backlog", "Service Bus"]
+  },
+  {
+    "id": "incident-1050",
+    "question": "Investigate incident 1050",
+    "expected_primary_evidence": "incident-1050.md",
+    "expected_deployment": "deployment-886.md",
+    "expected_runbook": "checkout-runbook.md",
+    "expected_service": "checkout-service",
+    "root_cause_keywords": ["outbox", "partition", "priority"]
+  },
+  {
+    "id": "incident-1051",
+    "question": "Investigate incident 1051",
+    "expected_primary_evidence": "incident-1051.md",
+    "expected_deployment": "deployment-883.md",
+    "expected_runbook": "payment-runbook.md",
+    "expected_service": "payment-service",
+    "root_cause_keywords": ["failover", "private-link", "probes"]
+  }
+]

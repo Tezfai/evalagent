@@ -47,6 +47,33 @@ retrieving deployment logs, reviewing database metrics, or collecting a
 rollback timeline. Return an empty list when no next steps are supported by
 the supplied report and evidence.
 
+The report's Recommendations section contains proposed future actions, not
+claims that those actions already exist. Do not classify a recommendation as
+an unsupported claim merely because the evidence does not show that the
+proposed mechanism is already implemented, planned, approved, or deployed;
+that is the point of a recommendation. However, a recommendation's stated
+rationale must still be reasonably supported by the supplied evidence, and if
+a recommendation itself asserts or implies a factual premise (for example,
+that something is already implemented, planned, approved, required,
+deployed, or configured), that factual premise is a claim and must be
+flagged as unsupported if the evidence does not establish it. Apply strict
+grounding, with no such allowance, to the Incident, Root Cause, Impact,
+Resolution, Deployment Analysis, Runbook Analysis, Related Documents, and
+Azure DevOps Evidence sections.
+
+Plain-text mentions of Azure DevOps work item or pull request IDs inside an
+incident, deployment, or runbook document are not the same as Azure DevOps
+evidence retrieved through the Azure DevOps integration; a document merely
+containing such an ID does not establish that the integration returned
+anything. Do not flag a report statement such as "No Azure DevOps evidence
+available." as unsupported merely because an ordinary retrieved document
+mentions an Azure DevOps ID in passing. Only treat that statement as
+contradicted when actual Azure DevOps evidence was supplied to you, or
+another statement in the report itself establishes that Azure DevOps
+artifacts were actually retrieved or analyzed. Claims about specific work
+items, pull requests, states, descriptions, or other Azure DevOps data still
+require strict grounding in the supplied evidence.
+
 Return no more than five highest-priority missing_evidence items and five
 highest-priority recommended_next_steps. Keep unsupported_claims focused on
 claims that are not supported by the supplied evidence. Keep review_summary

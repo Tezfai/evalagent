@@ -9,6 +9,7 @@ from unittest.mock import patch
 
 from backend import investigation_runner
 from backend import deployment_agent
+from backend import runbook_agent
 from backend import evalagent_mcp_server
 from backend import evalagent_mcp_client
 from backend.tool_registry import ToolRegistry
@@ -184,7 +185,7 @@ class InvestigationRunnerTests(unittest.TestCase):
             "See [checkout-runbook](../runbooks/checkout-runbook.md)."
         )
 
-        deployment_files, incident_files, runbook_files = (
+        deployment_files, incident_files, runbook_files, other_files = (
             investigation_runner._extract_references(
                 [{"file": "deployment-886.md", "content": content}]
             )
@@ -196,6 +197,88 @@ class InvestigationRunnerTests(unittest.TestCase):
             ["incident-1046.md", "incident-1050.md"],
         )
         self.assertEqual(runbook_files, ["checkout-runbook.md"])
+        self.assertEqual(other_files, [])
+
+    def test_generic_engineering_document_link_is_not_silently_dropped(self):
+        content = (
+            "See [redis-performance-investigation]"
+            "(../engineering/redis-performance-investigation.md) and "
+            "[redis-cache-runbook](../runbooks/redis-cache-runbook.md)."
+        )
+
+        deployment_files, incident_files, runbook_files, other_files = (
+            investigation_runner._extract_references(
+                [{"file": "incident-1042.md", "content": content}]
+            )
+        )
+
+        self.assertEqual(deployment_files, [])
+        self.assertEqual(incident_files, [])
+        self.assertEqual(runbook_files, ["redis-cache-runbook.md"])
+        self.assertEqual(
+            other_files,
+            ["redis-performance-investigation.md"],
+        )
+
+    def test_unretrieved_generic_document_appears_in_final_report(self):
+        """A generic corpus document (not deployment/incident/runbook) that is
+        linked but never retrieved must still surface as a referenced-but-
+        not-retrieved document in the final report."""
+        plan = {
+            "incident_id": "1042",
+            "deployment_id": None,
+            "runbook_reference": None,
+            "search_deployment": False,
+            "search_runbooks": False,
+        }
+        incident = [{
+            "file": "incident-1042.md",
+            "chunk_id": 0,
+            "content": (
+                "Resolution: See [redis-performance-investigation]"
+                "(../engineering/redis-performance-investigation.md) for "
+                "details."
+            ),
+            "category": "incident",
+            "primary": False,
+        }]
+        report_response = self._response(json.dumps({}))
+
+        with (
+            patch.object(
+                investigation_runner,
+                "create_investigation_plan",
+                return_value=plan,
+            ),
+            patch.object(
+                investigation_runner.tool_registry,
+                "get_incident",
+                return_value=incident,
+            ),
+            patch.object(
+                investigation_runner.client.chat.completions,
+                "create",
+                return_value=report_response,
+            ),
+            patch.object(
+                investigation_runner,
+                "review_report",
+                return_value=None,
+            ),
+        ):
+            report_text, evidence = investigation_runner.run_investigation(
+                "Investigate incident 1042"
+            )
+
+        self.assertNotIn(
+            "redis-performance-investigation.md",
+            {item["file"] for item in evidence},
+        )
+        self.assertIn("redis-performance-investigation.md", report_text)
+        self.assertIn(
+            "Referenced but Not Retrieved:\n- redis-performance-investigation.md",
+            report_text,
+        )
 
     def test_direct_deployment_retrieves_links_without_semantic_incident_search(self):
         plan = {
@@ -312,6 +395,101 @@ class InvestigationRunnerTests(unittest.TestCase):
         self.assertEqual(result[0]["chunk_id"], "0, 1")
         self.assertEqual(result[0]["content"], "A\n\nB")
         self.assertTrue(result[0]["primary"])
+
+    def test_format_related_documents_reproduces_filenames_exactly(self):
+        rendered = investigation_runner._format_related_documents(
+            {"incident-1048.md", "deployment-882.md"},
+            ["redis-performance-investigation.md"],
+        )
+
+        self.assertIn("- deployment-882.md", rendered)
+        self.assertIn("- incident-1048.md", rendered)
+        self.assertIn("- redis-performance-investigation.md", rendered)
+        self.assertNotIn("deployment-88.md", rendered)
+
+    def test_format_related_documents_reports_none_when_lists_are_empty(self):
+        rendered = investigation_runner._format_related_documents(set(), [])
+
+        self.assertIn("Retrieved:\n- None available.", rendered)
+        self.assertIn("Referenced but Not Retrieved:\n- None available.", rendered)
+
+    def test_related_documents_section_ignores_llm_invented_filenames(self):
+        """Related Documents must come from code-computed evidence, not LLM
+        prose - even if the LLM invents/truncates a document identifier."""
+        plan = {
+            "incident_id": "1048",
+            "deployment_id": None,
+            "runbook_reference": None,
+            "search_deployment": False,
+            "search_runbooks": False,
+        }
+        incident = [{
+            "file": "incident-1048.md",
+            "chunk_id": 0,
+            "content": (
+                "A hot-key mitigation from deployment 882 duplicated cart "
+                "payloads. Database read traffic doubled."
+            ),
+            "category": "incident",
+            "primary": False,
+        }]
+        # The LLM invents a truncated, nonexistent filename in its own prose.
+        report_response = self._response(json.dumps({
+            "Related Documents": (
+                "Referenced but not retrieved: deployment-88.md"
+            ),
+        }))
+
+        with (
+            patch.object(
+                investigation_runner,
+                "create_investigation_plan",
+                return_value=plan,
+            ),
+            patch.object(
+                investigation_runner.tool_registry,
+                "get_incident",
+                return_value=incident,
+            ),
+            patch.object(
+                investigation_runner.tool_registry,
+                "get_deployment",
+                return_value=[],
+            ),
+            patch.object(
+                investigation_runner,
+                "analyze_deployment",
+                return_value=None,
+            ),
+            patch.object(
+                investigation_runner.client.chat.completions,
+                "create",
+                return_value=report_response,
+            ),
+            patch.object(
+                investigation_runner,
+                "review_report",
+                return_value=None,
+            ),
+        ):
+            report_text, evidence = investigation_runner.run_investigation(
+                "Investigate incident 1048"
+            )
+
+        self.assertIn("deployment-882.md", report_text)
+        self.assertNotIn("deployment-88.md", report_text)
+
+    def test_report_system_prompt_forbids_negative_claims_from_absence_of_evidence(self):
+        self.assertIn(
+            "Absence of evidence is not evidence of absence",
+            investigation_runner.REPORT_SYSTEM_PROMPT,
+        )
+
+    def test_report_system_prompt_forbids_attributing_supporting_incident_facts(self):
+        self.assertIn(
+            "must not be attributed to the primary incident",
+            investigation_runner.REPORT_SYSTEM_PROMPT,
+        )
 
     def test_retrieved_evidence_category_cannot_override_registry_category(self):
         result = ToolRegistry._with_category(
@@ -523,6 +701,207 @@ class InvestigationRunnerTests(unittest.TestCase):
             delta=2,
         )
 
+    def test_retrieved_runbook_survives_evidence_limiting_and_is_cited(self):
+        """A runbook that is actually retrieved must not be dropped from the
+        final evidence set by supporting-evidence limiting, and its real
+        content must be reflected in the report."""
+        plan = {
+            "incident_id": "1046",
+            "deployment_id": None,
+            "runbook_reference": None,
+            "search_deployment": False,
+            "search_runbooks": False,
+        }
+        incident = [{
+            "file": "incident-1046.md",
+            "chunk_id": 0,
+            "content": (
+                "Related deployments: deployment-883, deployment-884, "
+                "deployment-885. See checkout-runbook.md for remediation."
+            ),
+            "category": "incident",
+            "primary": False,
+        }]
+
+        def get_deployment(file_name):
+            return [{
+                "file": file_name,
+                "chunk_id": 0,
+                "content": f"Deployment facts for {file_name}.",
+                "category": "deployment",
+                "primary": False,
+            }]
+
+        runbook_evidence = [{
+            "file": "checkout-runbook.md",
+            "chunk_id": 0,
+            "content": "Checkout runbook facts.",
+            "category": "runbook",
+            "primary": False,
+        }]
+
+        real_runbook_analysis = {
+            "runbook": "checkout-runbook.md",
+            "purpose": "Restore checkout availability",
+            "immediate_actions": ["Restart checkout pods if CPU > 90%"],
+            "escalation_conditions": [
+                "Page on-call if error rate exceeds 5% for 10 minutes"
+            ],
+            "recovery_steps": ["Fail over to the standby database"],
+            "risk_level": "High",
+        }
+
+        report_response = self._response(json.dumps({}))
+
+        with (
+            patch.object(
+                investigation_runner,
+                "create_investigation_plan",
+                return_value=plan,
+            ),
+            patch.object(
+                investigation_runner.tool_registry,
+                "get_incident",
+                return_value=incident,
+            ),
+            patch.object(
+                investigation_runner.tool_registry,
+                "get_deployment",
+                side_effect=get_deployment,
+            ),
+            patch.object(
+                investigation_runner.tool_registry,
+                "get_runbook",
+                return_value=runbook_evidence,
+            ) as get_runbook_mock,
+            patch.object(
+                investigation_runner,
+                "analyze_deployment",
+                return_value=None,
+            ),
+            patch.object(
+                investigation_runner,
+                "analyze_runbook",
+                return_value=real_runbook_analysis,
+            ) as analyze_runbook_mock,
+            patch.object(
+                investigation_runner.client.chat.completions,
+                "create",
+                return_value=report_response,
+            ),
+            patch.object(
+                investigation_runner,
+                "review_report",
+                return_value=None,
+            ),
+        ):
+            report_text, evidence = investigation_runner.run_investigation(
+                "Investigate incident 1046"
+            )
+
+        get_runbook_mock.assert_called_once_with("checkout-runbook.md")
+        analyze_runbook_mock.assert_called_once()
+
+        # The runbook must survive into the final grounded evidence set...
+        evidence_files = {item["file"] for item in evidence}
+        self.assertIn("checkout-runbook.md", evidence_files)
+
+        # ...and the report must cite its actual retrieved content.
+        self.assertIn("Restart checkout pods", report_text)
+        self.assertIn("standby database", report_text)
+        self.assertIn("error rate exceeds 5%", report_text)
+        self.assertNotIn("was referenced but not retrieved", report_text.lower())
+
+    def test_unretrieved_runbook_reference_does_not_invent_content(self):
+        """If the referenced runbook genuinely cannot be retrieved, the
+        report must not invent its procedures, thresholds, or escalation
+        conditions, and must state clearly that it was not retrieved."""
+        plan = {
+            "incident_id": "1046",
+            "deployment_id": None,
+            "runbook_reference": None,
+            "search_deployment": False,
+            "search_runbooks": False,
+        }
+        incident = [{
+            "file": "incident-1046.md",
+            "chunk_id": 0,
+            "content": (
+                "Related deployments: deployment-883, deployment-884, "
+                "deployment-885. See checkout-runbook.md for remediation."
+            ),
+            "category": "incident",
+            "primary": False,
+        }]
+
+        def get_deployment(file_name):
+            return [{
+                "file": file_name,
+                "chunk_id": 0,
+                "content": f"Deployment facts for {file_name}.",
+                "category": "deployment",
+                "primary": False,
+            }]
+
+        report_response = self._response(json.dumps({}))
+
+        with (
+            patch.object(
+                investigation_runner,
+                "create_investigation_plan",
+                return_value=plan,
+            ),
+            patch.object(
+                investigation_runner.tool_registry,
+                "get_incident",
+                return_value=incident,
+            ),
+            patch.object(
+                investigation_runner.tool_registry,
+                "get_deployment",
+                side_effect=get_deployment,
+            ),
+            patch.object(
+                investigation_runner.tool_registry,
+                "get_runbook",
+                return_value=[],
+            ) as get_runbook_mock,
+            patch.object(
+                investigation_runner,
+                "analyze_deployment",
+                return_value=None,
+            ),
+            patch.object(
+                investigation_runner,
+                "analyze_runbook",
+            ) as analyze_runbook_mock,
+            patch.object(
+                investigation_runner.client.chat.completions,
+                "create",
+                return_value=report_response,
+            ),
+            patch.object(
+                investigation_runner,
+                "review_report",
+                return_value=None,
+            ),
+        ):
+            report_text, evidence = investigation_runner.run_investigation(
+                "Investigate incident 1046"
+            )
+
+        # Retrieval was attempted, but returned nothing to analyze.
+        get_runbook_mock.assert_called_once_with("checkout-runbook.md")
+        analyze_runbook_mock.assert_not_called()
+
+        evidence_files = {item["file"] for item in evidence}
+        self.assertNotIn("checkout-runbook.md", evidence_files)
+
+        self.assertIn("checkout-runbook.md", report_text)
+        self.assertIn("not retrieved", report_text.lower())
+        self.assertIn("cannot be verified", report_text.lower())
+
+
 
 class DeploymentAgentTests(unittest.TestCase):
     @staticmethod
@@ -614,6 +993,207 @@ class DeploymentAgentTests(unittest.TestCase):
         self.assertEqual(create.call_count, 2)
         self.assertNotIn("SECRET deployment evidence", output.getvalue())
         self.assertIn("finish_reason=length", output.getvalue())
+
+    def test_explicit_risk_rating_in_evidence_is_preserved(self):
+        result = self._response(
+            json.dumps({
+                "deployment": "deployment-886.md",
+                "change_summary": "Changed concurrency.",
+                "risks": ["Connection pool exhaustion"],
+                "related_incidents": [],
+                "rollback_status": "Rolled back",
+                "risk_rating": "High",
+            })
+        )
+        with patch.object(
+            deployment_agent.client.chat.completions,
+            "create",
+            return_value=result,
+        ):
+            analysis = deployment_agent.analyze_deployment(
+                "deployment-886.md",
+                "The change was assessed as High risk due to pool saturation.",
+            )
+
+        self.assertEqual(analysis["risk_rating"], "High")
+
+    def test_missing_risk_rating_is_not_established_not_invented(self):
+        result = self._response(
+            json.dumps({
+                "deployment": "deployment-882.md",
+                "change_summary": "Introduced parallel cart-session lookups.",
+                "risks": [],
+                "related_incidents": ["incident-1042"],
+                "rollback_status": "Rolled back",
+                "risk_rating": deployment_agent.NOT_ESTABLISHED,
+            })
+        )
+        with patch.object(
+            deployment_agent.client.chat.completions,
+            "create",
+            return_value=result,
+        ):
+            analysis = deployment_agent.analyze_deployment(
+                "deployment-882.md",
+                "Deployment evidence with no stated risk rating.",
+            )
+
+        self.assertEqual(analysis["risk_rating"], deployment_agent.NOT_ESTABLISHED)
+        self.assertNotIn(analysis["risk_rating"], {"Low", "Medium", "High"})
+
+    def test_incident_severity_alone_does_not_become_risk_rating(self):
+        """SEV-2 describes incident impact, not deployment risk, and must not
+        be surfaced as risk_rating on its own."""
+        result = self._response(
+            json.dumps({
+                "deployment": "deployment-882.md",
+                "change_summary": "Introduced parallel cart-session lookups.",
+                "risks": [],
+                "related_incidents": ["incident-1042"],
+                "rollback_status": "Rolled back",
+                "risk_rating": deployment_agent.NOT_ESTABLISHED,
+            })
+        )
+        with patch.object(
+            deployment_agent.client.chat.completions,
+            "create",
+            return_value=result,
+        ):
+            analysis = deployment_agent.analyze_deployment(
+                "deployment-882.md",
+                "Related incident-1042 was Severity SEV-2. "
+                "No risk rating is stated for this deployment.",
+            )
+
+        self.assertEqual(analysis["risk_rating"], deployment_agent.NOT_ESTABLISHED)
+
+    def test_invalid_risk_rating_still_raises(self):
+        result = self._response(
+            json.dumps({
+                "deployment": "deployment-886.md",
+                "change_summary": "Changed concurrency.",
+                "risks": [],
+                "related_incidents": [],
+                "rollback_status": "",
+                "risk_rating": "Critical",
+            })
+        )
+        with patch.object(
+            deployment_agent.client.chat.completions,
+            "create",
+            return_value=result,
+        ):
+            with self.assertRaises(ValueError):
+                deployment_agent.analyze_deployment(
+                    "deployment-886.md",
+                    "Deployment evidence",
+                )
+
+
+class RunbookAgentTests(unittest.TestCase):
+    @staticmethod
+    def _response(content, finish_reason="stop"):
+        return SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    finish_reason=finish_reason,
+                    message=SimpleNamespace(content=content),
+                )
+            ]
+        )
+
+    def test_explicit_risk_level_in_evidence_is_preserved(self):
+        result = self._response(
+            json.dumps({
+                "runbook": "payment-runbook.md",
+                "purpose": "Restore payment authorization",
+                "immediate_actions": ["Halt the rollout"],
+                "escalation_conditions": [],
+                "recovery_steps": [],
+                "risk_level": "Medium",
+            })
+        )
+        with patch.object(
+            runbook_agent.client.chat.completions,
+            "create",
+            return_value=result,
+        ):
+            analysis = runbook_agent.analyze_runbook(
+                "payment-runbook.md",
+                "# Payment Runbook\nThis runbook is rated Medium risk.",
+            )
+
+        self.assertEqual(analysis["risk_level"], "Medium")
+
+    def test_missing_risk_level_is_not_established_not_invented(self):
+        result = self._response(
+            json.dumps({
+                "runbook": "redis-cache-runbook.md",
+                "purpose": "Respond to cache hit-rate collapse",
+                "immediate_actions": ["Check memory and evictions"],
+                "escalation_conditions": [],
+                "recovery_steps": ["Restore TTL policies"],
+                "risk_level": runbook_agent.NOT_ESTABLISHED,
+            })
+        )
+        with patch.object(
+            runbook_agent.client.chat.completions,
+            "create",
+            return_value=result,
+        ):
+            analysis = runbook_agent.analyze_runbook(
+                "redis-cache-runbook.md",
+                "# Redis Cache Runbook\nNo risk level is stated.",
+            )
+
+        self.assertEqual(analysis["risk_level"], runbook_agent.NOT_ESTABLISHED)
+        self.assertNotIn(analysis["risk_level"], {"Low", "Medium", "High"})
+
+    def test_incident_severity_alone_does_not_become_risk_level(self):
+        result = self._response(
+            json.dumps({
+                "runbook": "checkout-runbook.md",
+                "purpose": "Restore checkout availability",
+                "immediate_actions": [],
+                "escalation_conditions": [],
+                "recovery_steps": [],
+                "risk_level": runbook_agent.NOT_ESTABLISHED,
+            })
+        )
+        with patch.object(
+            runbook_agent.client.chat.completions,
+            "create",
+            return_value=result,
+        ):
+            analysis = runbook_agent.analyze_runbook(
+                "checkout-runbook.md",
+                "# Checkout Runbook\nTriggered for SEV-1 checkout incidents. "
+                "No risk level is stated for this runbook.",
+            )
+
+        self.assertEqual(analysis["risk_level"], runbook_agent.NOT_ESTABLISHED)
+
+    def test_invalid_risk_level_still_raises(self):
+        result = self._response(
+            json.dumps({
+                "runbook": "payment-runbook.md",
+                "purpose": "Restore payment authorization",
+                "immediate_actions": [],
+                "escalation_conditions": [],
+                "recovery_steps": [],
+                "risk_level": "Critical",
+            })
+        )
+        with patch.object(
+            runbook_agent.client.chat.completions,
+            "create",
+            return_value=result,
+        ):
+            with self.assertRaises(ValueError):
+                runbook_agent.analyze_runbook(
+                    "payment-runbook.md",
+                    "# Payment Runbook\nSome content.",
+                )
 
 
 class EvalagentMcpServerTests(unittest.TestCase):
