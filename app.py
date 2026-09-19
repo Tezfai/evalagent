@@ -4,6 +4,14 @@ import streamlit as st
 from backend.rag_ai_search import ask_question
 
 DATA_DIR = Path(__file__).parent / "data"
+FALLBACK_DATA_DIR = Path(__file__).parent / "data_backup"
+
+
+def get_data_directories():
+    directories = [DATA_DIR]
+    if FALLBACK_DATA_DIR.exists():
+        directories.append(FALLBACK_DATA_DIR)
+    return directories
 
 
 def load_source_document(source_file):
@@ -11,11 +19,10 @@ def load_source_document(source_file):
         return None
 
     source_name = Path(source_file).name
-    matches = DATA_DIR.rglob(source_name)
-
-    for match in matches:
-        if match.is_file():
-            return match.read_text(encoding="utf-8")
+    for data_directory in get_data_directories():
+        for match in data_directory.rglob(source_name):
+            if match.is_file():
+                return match.read_text(encoding="utf-8")
 
     return None
 
@@ -57,6 +64,27 @@ st.set_page_config(
     layout="wide"
 )
 
+st.markdown(
+    """
+    <style>
+    [data-testid="stAppViewContainer"] { background: #f5f7fb; }
+    [data-testid="stHeader"] { background: rgba(245, 247, 251, 0.85); }
+    [data-testid="stSidebar"] { background: #111827; }
+    [data-testid="stSidebar"] * { color: #e5e7eb; }
+    .hero {
+        background: linear-gradient(135deg, #172554 0%, #0f766e 100%);
+        border-radius: 14px;
+        color: white;
+        padding: 1.6rem 1.8rem;
+        margin-bottom: 1rem;
+    }
+    .hero h1 { color: white; margin: 0; }
+    .hero p { color: #dbeafe; margin: 0.4rem 0 0; }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
@@ -81,15 +109,33 @@ with st.sidebar:
             "with Azure OpenAI, Azure AI Search, and RAG."
         )
 
-with st.container(border=True):
-    st.title("🔍 Incident Investigation Assistant")
-    st.caption("Azure OpenAI + Azure AI Search + RAG")
-    st.markdown(
-        "Ask a question about incidents, deployments, architecture, or runbooks."
-    )
+st.markdown(
+    """
+    <section class="hero">
+        <h1>Incident Investigation Assistant</h1>
+        <p>Grounded answers across incidents, deployments, architecture, and runbooks.</p>
+    </section>
+    """,
+    unsafe_allow_html=True,
+)
 
 with st.container():
-    st.subheader("💬 Conversation")
+    if not st.session_state.messages:
+        st.subheader("Start an investigation")
+        st.caption("Try one of these focused questions, or write your own below.")
+        prompt_columns = st.columns(3)
+        prompts = [
+            "What caused the checkout latency incident?",
+            "Which deployment is linked to incident 1042?",
+            "What are the recovery steps for a payment outage?",
+        ]
+        for column, prompt in zip(prompt_columns, prompts):
+            if column.button(prompt, use_container_width=True):
+                st.session_state.pending_question = prompt
+                st.rerun()
+    else:
+        st.subheader("Conversation")
+
     for message in st.session_state.messages:
         role_label = "🤖 Assistant" if message["role"] == "assistant" else "👤 You"
         with st.chat_message(message["role"]):
@@ -98,9 +144,8 @@ with st.container():
             if message["role"] == "assistant":
                 display_sources(message["sources"])
 
-question = st.chat_input(
-    "What caused the checkout latency incident?"
-)
+question = st.chat_input("Ask about an incident, deployment, runbook, or service")
+question = question or st.session_state.pop("pending_question", None)
 
 if question and question.strip():
     st.session_state.messages.append({
@@ -114,7 +159,15 @@ if question and question.strip():
         st.markdown(question)
 
     with st.spinner("Investigating..."):
-        answer, sources = ask_question(question)
+        try:
+            answer, sources = ask_question(question)
+        except Exception as error:
+            answer = (
+                "I couldn't complete that investigation. Check the Azure OpenAI "
+                "and Azure AI Search configuration, then try again."
+            )
+            sources = []
+            st.error(str(error))
 
     st.session_state.messages.append({
         "role": "assistant",
