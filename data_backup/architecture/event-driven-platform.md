@@ -14,4 +14,4 @@ Delivery is at least once. Message locks, partition choice, retry limits, and de
 Track oldest message age, active message count, lock-loss rate, redelivery count, dead-letter count, consumer lag, and publish-to-process duration. Queue depth alone is insufficient for incident detection.
 
 ## Known risks
-Single partitions create head-of-line blocking, and processing time that exceeds lock duration causes repeated redelivery. See [incident-1049](../incidents/incident-1049.md), [incident-1050](../incidents/incident-1050.md), and [service-bus-delay-investigation](../engineering/service-bus-delay-investigation.md).
+Single partitions create head-of-line blocking, and processing time that exceeds lock duration causes repeated redelivery. See [incident-1049](../incidents/incident-1049.md), [incident-1050](../incidents/incident-1050.md), and [service-bus-delay-investigation](../engineering/service-bus-delay-investigation.md). 
