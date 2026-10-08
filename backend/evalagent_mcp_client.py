@@ -127,7 +127,7 @@ def get_application_insights_telemetry(
     service_name,
     start_time,
     end_time,
-    incident_id=None,
+    incident_id=None, 
     max_records=200,
 ):
     return call_tool(
