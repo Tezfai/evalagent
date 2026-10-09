@@ -31,7 +31,7 @@ def _server_parameters():
 def _decode_result(result):
     if getattr(result, "is_error", False):
         raise RuntimeError("MCP tool call failed")
-
+    # If the result is neither an error nor contains structured content, fall back to text content.
     structured_content = getattr(result, "structured_content", None)
     if structured_content is not None:
         if isinstance(structured_content, dict) and "result" in structured_content:
