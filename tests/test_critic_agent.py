@@ -1,6 +1,10 @@
 import re
 import unittest
 
+from tests.offline_bootstrap import configure_offline_tests
+
+configure_offline_tests()
+
 from backend import critic_agent
 
 

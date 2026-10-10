@@ -1,6 +1,10 @@
 import unittest
 from unittest.mock import patch
 
+from tests.offline_bootstrap import configure_offline_tests
+
+configure_offline_tests()
+
 from backend import eval_harness
 from backend import investigation_runner as ir
 

@@ -3,6 +3,10 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from tests.offline_bootstrap import configure_offline_tests
+
+configure_offline_tests()
+
 from azure.monitor.query import LogsQueryStatus
 
 from backend.application_insights_client import (

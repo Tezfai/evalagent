@@ -2,6 +2,10 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch, MagicMock
 
+from tests.offline_bootstrap import configure_offline_tests
+
+configure_offline_tests()
+
 from backend.blob_storage_client import BlobStorageClient
 
 

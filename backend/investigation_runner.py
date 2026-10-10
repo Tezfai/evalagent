@@ -664,13 +664,14 @@ def run_investigation(
                     primary_deployment
                 )
             if deployment_evidence:
-                primary_evidence = deployment_evidence[0]
-                primary_evidence_items = _mark_primary(deployment_evidence)
+                if not incident_id:
+                    primary_evidence = deployment_evidence[0]
+                    primary_evidence_items = _mark_primary(deployment_evidence)
                 initial_evidence.extend(deployment_evidence)
             elif not incident_id:
                 primary_evidence = None
                 primary_evidence_items = []
-        else:
+        elif not incident_id:
             primary_evidence = None
             primary_evidence_items = []
         if not primary_deployment:

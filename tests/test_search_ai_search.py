@@ -3,6 +3,10 @@ from contextlib import redirect_stdout, redirect_stderr
 from unittest import mock
 import unittest
 
+from tests.offline_bootstrap import configure_offline_tests
+
+configure_offline_tests()
+
 from backend import search_ai_search
 
 

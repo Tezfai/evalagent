@@ -52,6 +52,7 @@ flowchart TD
 
     subgraph Multi-Agent Investigation Workflow
         CLI --> Planner[Investigator / Planner Agent]
+        StreamlitUI -->|Investigate mode| Planner
         Planner --> ToolRegistry[Tool Registry\nDirect / MCP Provider]
         
         ToolRegistry --> AISearch
@@ -228,11 +229,38 @@ python backend/ingest_ai_search.py
 
 ### 1. Interactive Streamlit Web Interface
 
-Launch the interactive RAG UI:
+Launch the EvalAgent dashboard from the repository root:
 
 ```bash
-streamlit run app.py
+python -m streamlit run app.py
 ```
+
+Open http://localhost:8501. The dashboard has two workspaces:
+
+- **Investigate** calls the existing multi-agent runner. Azure DevOps defaults to excluded. Application Insights defaults to **Auto** (the backend plan decides), with **Include** and **Exclude** mapping to the existing boolean arguments. Including an integration is a request, not a connection-health check or a guarantee that evidence is available.
+- **Conversation** retains RAG Q&A, suggested questions, chat history, and expandable sources. Investigation and conversation histories are separate and remain available when switching modes. Each workspace has its own clear-history action.
+
+Investigation results are organized into **Overview**, **Deployment**, **Runbook**, **Evidence**, and **Review**. Unknown report sections remain visible in Overview. The complete original Markdown is accessible and downloadable without changing its content. Critic review is explicitly labeled as a model-generated assessment, not independent verification.
+
+Overview displays explicitly labeled incident metadata, including severity and status badges, without inferring missing facts. Deployment, runbook, impact, and critic fields receive labeled presentation where their formatting is recognized. Unknown, ambiguous, duplicate, or unfamiliar field formats fall back to original section text. Recommendations retain their content and order while recognized list markers receive readable numbering. No risk rating is inferred from incident severity, and critic confidence labels are never converted into numerical scores.
+
+Original-report viewing and Markdown download controls occupy one report-actions area above the tabs. Example investigation requests populate the input without executing a request. Submission is disabled while an investigation runs; failed requests retain their input and offer a retry using the same integration choices. Conversation remains independent document Q&A: displayed message history and investigation reports are not automatically passed as context to its backend.
+
+Evidence retains filenames, available chunk identifiers, category, and retrieved text. Full documents are shown separately when a local copy exists in `data/` or `data_backup/`; otherwise retrieved text remains available. The dashboard does not fetch full documents from Blob Storage.
+
+Execution feedback reflects only the synchronous request's running, completed, or failed state. The backend exposes no agent-stage events or percentage progress. Errors shown to users are sanitized; Streamlit's internal error details are disabled. The dashboard does not display credentials or environment configuration beyond the recognized tool-provider label.
+
+Presentation helpers live in `frontend.py`, custom styling in `assets/dashboard.css`, and native theming in `.streamlit/config.toml`. The Streamlit minor-version range in `requirements.txt` is tested with AppTest; review CSS selectors and browser behavior before upgrading it.
+
+Frontend tests replace both backend entry-point modules with mocks, so they do not invoke Azure:
+
+All offline test modules initialize `tests/offline_bootstrap.py` before importing backend clients. It disables dotenv loading, removes inherited service credentials, installs fake test-only OpenAI configuration, and rejects external socket connections. Loopback remains available for Python's event loop. This bootstrap is not imported by the application or production backend. MCP regression tests also initialize a real stdio server and list tools without invoking Azure tools.
+
+```bash
+python -m unittest discover -s tests -p test_frontend.py -v
+```
+
+**Deployment considerations:** Histories are session-only, not durable storage. Long investigations remain synchronous and cannot be cancelled through the UI. A future container image must include the stylesheet, theme configuration, and any desired local source documents. Multi-replica hosting needs WebSocket/session routing considerations. Authentication, ingress, secrets, persistence, Docker, and Azure Container Apps deployment are not implemented by this frontend change.
 
 ### 2. Multi-Agent Investigation CLI
 
@@ -251,6 +279,10 @@ The repository includes a comprehensive, offline unit test suite that mocks Azur
 ```bash
 python -m unittest discover tests
 ```
+
+The test command works without a local `.env` file, API keys, PATs, or an Azure CLI login. Live investigations and the real evaluation harness are separate, opt-in operations; do not invoke them as offline tests.
+
+MCP subprocesses receive an explicit configuration allowlist for Search, OpenAI embeddings, Azure DevOps, Azure Monitor, Azure identity discovery, proxy/CA settings, and dotenv/bytecode controls. The MCP SDK retains its safe OS environment defaults. Unrelated environment variables are not forwarded, and credentials are never printed by the forwarding code. Managed identity and injected settings therefore do not depend on a local `.env` file; certificate and federated-token file paths still require the referenced files to be available in the process environment.
 
 ---
 

@@ -1,4 +1,4 @@
-streamlit>=1.32.0
+streamlit>=1.63.0,<1.64.0
 openai>=1.14.0
 azure-search-documents>=11.4.0
 azure-identity>=1.15.0

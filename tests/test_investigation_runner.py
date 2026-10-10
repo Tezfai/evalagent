@@ -7,6 +7,10 @@ from contextlib import redirect_stdout
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from tests.offline_bootstrap import configure_offline_tests
+
+configure_offline_tests()
+
 from backend import investigation_runner
 from backend import deployment_agent
 from backend import runbook_agent
@@ -16,6 +20,39 @@ from backend.tool_registry import ToolRegistry
 
 
 class InvestigationRunnerTests(unittest.TestCase):
+    def test_primary_precedence_preserves_supporting_retrieval(self):
+        for incident_id, deployment_id in (("2107", None), ("2107", "930"), (None, "930")):
+            with self.subTest(incident_id=incident_id, deployment_id=deployment_id):
+                incident_file = "incident-2107.md"
+                deployment_file = "deployment-930.md"
+                runbook_file = "cache-runbook.md"
+                related_file = "incident-2108.md"
+                incident = [{"file": incident_file, "chunk_id": 0, "content": f"[deployment]({deployment_file})\n[runbook]({runbook_file})", "category": "incident"}]
+                deployment = [{"file": deployment_file, "chunk_id": 0, "content": f"[related incident]({related_file})\n[runbook]({runbook_file})", "category": "deployment"}]
+                runbook = [{"file": runbook_file, "chunk_id": 0, "content": "Recovery procedure", "category": "runbook"}]
+                related = [{"file": related_file, "chunk_id": 0, "content": "Related incident", "category": "incident"}]
+                plan = {"incident_id": incident_id, "deployment_id": deployment_id, "search_deployment": True, "search_runbooks": True}
+                with (
+                    patch.object(investigation_runner, "create_investigation_plan", return_value=plan),
+                    patch.object(investigation_runner.tool_registry, "get_incident", side_effect=lambda filename: incident if filename == incident_file else related) as get_incident,
+                    patch.object(investigation_runner.tool_registry, "get_deployment", return_value=deployment) as get_deployment,
+                    patch.object(investigation_runner.tool_registry, "get_runbook", return_value=runbook) as get_runbook,
+                    patch.object(investigation_runner, "analyze_deployment", return_value=None),
+                    patch.object(investigation_runner, "analyze_runbook", return_value=None),
+                    patch.object(investigation_runner, "_generate_report", return_value="{}"),
+                    patch.object(investigation_runner, "review_report", return_value=None),
+                ):
+                    report, evidence = investigation_runner.run_investigation("Investigate the specified incident and deployment")
+                expected_primary = incident_file if incident_id else deployment_file
+                self.assertEqual([item["file"] for item in evidence if item.get("primary")], [expected_primary])
+                self.assertTrue(report.startswith(f"Primary Evidence: {expected_primary}\n"))
+                self.assertIn(deployment_file, [item["file"] for item in evidence])
+                self.assertIn(runbook_file, [item["file"] for item in evidence])
+                self.assertIn(related_file, [item["file"] for item in evidence])
+                get_deployment.assert_called_with(deployment_file)
+                get_runbook.assert_called_with(runbook_file)
+                get_incident.assert_any_call(related_file)
+
     @staticmethod
     def _response(content, finish_reason="stop"):
         return SimpleNamespace(
@@ -1294,6 +1331,28 @@ class EvalagentMcpServerTests(unittest.TestCase):
 
 
 class EvalagentMcpClientTests(unittest.TestCase):
+    def test_subprocess_receives_only_required_configuration(self):
+        configuration = {name: f"fake-{name.lower()}" for name in evalagent_mcp_client.SERVER_ENVIRONMENT_VARIABLES}
+        unrelated = {"UNRELATED_SECRET": "must-not-forward", "AZURE_STORAGE_ACCOUNT_NAME": "not-used-by-tools", "EVALAGENT_TOOL_PROVIDER": "mcp", "PATH": "safe-system-path"}
+        with patch.dict("os.environ", {**configuration, **unrelated}, clear=True):
+            parameters = evalagent_mcp_client._server_parameters()
+            self.assertEqual(parameters.env, configuration)
+            from mcp.client.stdio import get_default_environment
+            combined = get_default_environment() | parameters.env
+            self.assertEqual(combined["PATH"], unrelated["PATH"])
+            self.assertNotIn("UNRELATED_SECRET", combined)
+            self.assertNotIn("AZURE_STORAGE_ACCOUNT_NAME", parameters.env)
+            self.assertNotIn("EVALAGENT_TOOL_PROVIDER", parameters.env)
+
+    def test_subprocess_does_not_invent_missing_configuration(self):
+        with patch.dict("os.environ", {}, clear=True):
+            parameters = evalagent_mcp_client._server_parameters()
+        self.assertEqual(parameters.env, {})
+
+    def test_real_stdio_server_lists_tools_without_dotenv_or_azure_calls(self):
+        with patch.dict("os.environ", {"PYTHON_DOTENV_DISABLED": "1", "PYTHONDONTWRITEBYTECODE": "1"}):
+            self.assertEqual(evalagent_mcp_client.list_tool_names(), list(evalagent_mcp_client.TOOL_NAMES))
+
     def test_client_sends_tool_name_and_arguments(self):
         calls = []
 

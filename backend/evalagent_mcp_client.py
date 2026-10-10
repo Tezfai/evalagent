@@ -1,6 +1,7 @@
 """Synchronous MCP client for the evalagent investigation tool server."""
 
 import asyncio
+import os
 import sys
 from pathlib import Path
 
@@ -9,6 +10,20 @@ from mcp import ClientSession, StdioServerParameters, stdio_client
 
 SERVER_MODULE = "backend.evalagent_mcp_server"
 SERVER_ROOT = Path(__file__).resolve().parents[1]
+SERVER_ENVIRONMENT_VARIABLES = (
+    "AZURE_OPENAI_ENDPOINT", "AZURE_OPENAI_API_KEY", "AZURE_OPENAI_EMBEDDING_DEPLOYMENT",
+    "AZURE_SEARCH_ENDPOINT", "AZURE_SEARCH_KEY", "AZURE_SEARCH_INDEX",
+    "AZDO_ORG", "AZDO_PROJECT", "AZDO_PAT", "APPLICATIONINSIGHTS_WORKSPACE_ID",
+    "AZURE_CLIENT_ID", "AZURE_TENANT_ID", "AZURE_CLIENT_SECRET", "AZURE_AUTHORITY_HOST",
+    "AZURE_CLIENT_CERTIFICATE_PATH", "AZURE_CLIENT_CERTIFICATE_PASSWORD",
+    "AZURE_CLIENT_SEND_CERTIFICATE_CHAIN", "AZURE_FEDERATED_TOKEN_FILE", "AZURE_TOKEN_CREDENTIALS",
+    "IDENTITY_ENDPOINT", "IDENTITY_HEADER", "IDENTITY_SERVER_THUMBPRINT",
+    "MSI_ENDPOINT", "MSI_SECRET", "IMDS_ENDPOINT",
+    "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY",
+    "http_proxy", "https_proxy", "all_proxy", "no_proxy",
+    "SSL_CERT_FILE", "SSL_CERT_DIR", "REQUESTS_CA_BUNDLE",
+    "PYTHON_DOTENV_DISABLED", "PYTHONDONTWRITEBYTECODE",
+)
 TOOL_NAMES = (
     "get_incident",
     "get_deployment",
@@ -25,6 +40,7 @@ def _server_parameters():
         command=sys.executable,
         args=["-m", SERVER_MODULE],
         cwd=SERVER_ROOT,
+        env={name: os.environ[name] for name in SERVER_ENVIRONMENT_VARIABLES if name in os.environ},
     )
 
 
