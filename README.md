@@ -250,7 +250,7 @@ Evidence retains filenames, available chunk identifiers, category, and retrieved
 
 Execution feedback reflects only the synchronous request's running, completed, or failed state. The backend exposes no agent-stage events or percentage progress. Errors shown to users are sanitized; Streamlit's internal error details are disabled. The dashboard does not display credentials or environment configuration beyond the recognized tool-provider label.
 
-Presentation helpers live in `frontend.py`, custom styling in `assets/dashboard.css`, and native theming in `.streamlit/config.toml`. The Streamlit minor-version range in `requirements.txt` is tested with AppTest; review CSS selectors and browser behavior before upgrading it.
+Presentation helpers live in `frontend.py`, custom styling in `assets/dashboard.css`, and native theming in `.streamlit/config.toml`. Runtime dependency versions are pinned in `requirements.txt`, with transitive constraints in `requirements.lock`; review CSS selectors and browser behavior before upgrading Streamlit.
 
 Frontend tests replace both backend entry-point modules with mocks, so they do not invoke Azure:
 
@@ -260,7 +260,65 @@ All offline test modules initialize `tests/offline_bootstrap.py` before importin
 python -m unittest discover -s tests -p test_frontend.py -v
 ```
 
-**Deployment considerations:** Histories are session-only, not durable storage. Long investigations remain synchronous and cannot be cancelled through the UI. A future container image must include the stylesheet, theme configuration, and any desired local source documents. Multi-replica hosting needs WebSocket/session routing considerations. Authentication, ingress, secrets, persistence, Docker, and Azure Container Apps deployment are not implemented by this frontend change.
+**Deployment considerations:** Histories are session-only, not durable storage. Long investigations remain synchronous and cannot be cancelled through the UI. Multi-replica hosting needs WebSocket/session routing considerations. Authentication, Azure ingress, secret management, persistence, and Azure Container Apps deployment are not implemented. Local Docker support is described below.
+
+### Local Docker Execution
+
+The image contains one Streamlit application and its Python backend. MCP tools run as on-demand stdio child processes in the same container, using the same Python interpreter and `/app` working directory. No ingestion, index rebuilds, synthetic telemetry, auxiliary servers, Azure CLI, or developer authentication caches are included.
+
+The base is the official `python:3.13-slim-bookworm` image pinned by digest, verified as Linux/amd64 with Python 3.13.16. Local tests use Python 3.13.5. All 65 pinned runtime packages have compatible, non-yanked CPython 3.13 Linux x86_64 wheels in public PyPI metadata. The image installs binary wheels only and runs `pip check`; no compiler or OS development packages are added. Constraints pin current installed versions rather than upgrading SDKs. The base digest and dependency constraints must be reviewed together for future security updates; artifact hashes are not enforced by this version lock.
+
+Docker was not available in the implementation environment. Dependency metadata, wheel availability, copy paths, exclusion rules, startup configuration, and offline tests were verified, but image build, Linux execution, image health, and container shutdown remain local verification gates. An intentionally fixed base digest is used rather than silently following tag updates.
+
+#### Build And Credential-Free Startup
+
+Install Docker Desktop separately and select Linux containers. Run these Windows PowerShell commands from the repository root:
+
+```powershell
+docker version
+docker build --platform linux/amd64 --tag evalagent:local .
+docker run --detach --init --name evalagent --stop-timeout 30 --cap-drop ALL --security-opt no-new-privileges:true --publish 127.0.0.1:8501:8501 evalagent:local
+```
+
+Open http://127.0.0.1:8501. Use another host port, such as `127.0.0.1:8503:8501`, if 8501 is already occupied. Credential-free startup supports inspecting the interface and tool discovery, not running live questions. Requests needing Azure credentials will fail with the existing sanitized error handling.
+
+Streamlit uses exec-form startup, binds to `0.0.0.0:8501` inside the container, disables file watching and usage-statistics collection, and receives `SIGTERM` on stop. Docker's `--init` forwards signals and reaps child processes; the existing MCP context managers handle normal stdio cleanup. Shutdown during an active Linux tool call still needs runtime verification.
+
+```powershell
+(Invoke-WebRequest -UseBasicParsing http://127.0.0.1:8501/_stcore/health).StatusCode
+docker inspect --format '{{.State.Health.Status}}' evalagent
+docker exec evalagent python -B -m backend.evalagent_mcp_client
+docker exec evalagent python -c "from pathlib import Path; import os; assert os.getuid() == 10001; assert Path('assets/dashboard.css').is_file(); assert Path('.streamlit/config.toml').is_file(); assert not list(Path('/app').rglob('.env*')); assert not Path('/app/.git').exists(); assert not Path('/app/documents.pkl').exists(); assert not Path('/app/vector_index.faiss').exists(); print('Non-root identity, assets and excluded local files verified')"
+docker stop --time 30 evalagent
+docker inspect --format '{{.State.ExitCode}}' evalagent
+docker rm evalagent
+```
+
+The health status can initially be `starting`; the probe checks `/_stcore/health` every 30 seconds. It does not call Azure or establish that a deployment, index, credential, or optional integration is usable. Tool discovery should list all seven tools without an API key or Azure CLI login. Observe the stop behavior and exit status rather than assuming shutdown succeeded. No container-image verification is claimed until these commands have been run.
+
+#### Live Azure Testing
+
+Use a separately maintained environment file at runtime only. An existing `.env` or a local `.env.docker` works; both are excluded from the build context and ignored by Git. Use Docker env-file syntax with `NAME=value` entries; avoid shell interpolation and unnecessary surrounding quotes. Do not use build arguments for secrets.
+
+```powershell
+docker run --detach --init --name evalagent --stop-timeout 30 --cap-drop ALL --security-opt no-new-privileges:true --env-file .\.env.docker --publish 127.0.0.1:8501:8501 evalagent:local
+```
+
+The image disables dotenv file loading: credentials must be injected into the process environment, not copied into an image layer. OpenAI and AI Search retain their existing API-key contracts, and Azure DevOps retains its optional PAT contract. Application Insights queries require an authorized `DefaultAzureCredential` identity; a host Azure CLI login is not inherited. For explicit local live testing, supply a least-privilege authorized service principal through `AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, and `AZURE_CLIENT_SECRET`, or an explicitly configured certificate/federated credential. Do not mount developer Azure CLI caches. Eventual Azure managed identity can use the existing credential chain after hosting identity and permissions are configured; this Docker change does not create them.
+
+MCP forwards only its existing configuration allowlist, including identity endpoint/header discovery and relevant proxy/CA settings. It does not log forwarded values. Its stdout is reserved for JSON-RPC; retrieval diagnostics go to stderr. Production live credentials are not used by offline tests. Avoid printing complete `docker inspect` output or environment variables on credential-bearing containers.
+
+The strict default-deny `.dockerignore` and explicit `COPY` instructions exclude secrets, Git metadata, tests, corpus backups, scripts, virtual environments, bytecode, and legacy FAISS/pickle files. Azure AI Search remains the retrieval source. Full local source documents are therefore unavailable by default; evidence inspection still shows retrieved chunks and clearly labels the absence of a full document. If needed, explicitly mount a sanitized document folder read-only at `/app/data` or `/app/data_backup`. This is optional and not needed for normal investigations.
+
+#### Offline Tests In The Image
+
+Host tests remain available with `python -B -m unittest discover tests`. To validate the Linux image with the same offline suite, mount only tests and packaging manifests read-only; do not supply an environment file or live credentials:
+
+```powershell
+docker run --rm --init --network none --cap-drop ALL --security-opt no-new-privileges:true --entrypoint python --mount "type=bind,source=$($PWD.Path)\tests,target=/app/tests,readonly" --mount "type=bind,source=$($PWD.Path)\Dockerfile,target=/app/Dockerfile,readonly" --mount "type=bind,source=$($PWD.Path)\.dockerignore,target=/app/.dockerignore,readonly" evalagent:local -B -m unittest discover tests -v
+```
+
+The test bootstrap supplies fake configuration and blocks external socket connections. The real stdio discovery regression lists tools without invoking cloud tools. Live investigations and the real evaluation harness remain opt-in and may consume paid Azure services; they are not run by image startup or offline tests. No authentication or public access restrictions are provided by local Docker: keep the host port bound to loopback until the Azure hosting/security phase.
 
 ### 2. Multi-Agent Investigation CLI
 
