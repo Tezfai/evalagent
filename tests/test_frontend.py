@@ -1,3 +1,4 @@
+import copy
 import tempfile
 import unittest
 from pathlib import Path
@@ -27,6 +28,63 @@ STRUCTURED_REPORT = (
     "## Report Review\nConfidence: medium\nReport Quality: acceptable\nEvidence Coverage: partial\n\nMissing Evidence:\n- Rollback validation evidence.\n\nUnsupported Claims:\n- None identified.\n\nRecommended Next Steps:\n- Verify recovery metrics.\n\nReview Summary: Further evidence would improve grounding.\n\n"
     "## Unfamiliar Section\nKeep every word of this section.\n"
 )
+
+def _advanced_metrics():
+    return {
+        "duration_ms": 6000,
+        "llm_duration_ms": 3500,
+        "tool_duration_ms": 1200,
+        "request_metrics_complete": True,
+        "agent_metrics_complete": True,
+        "tool_metrics_complete": True,
+        "calls_attempted": 2,
+        "calls_successful": 2,
+        "calls_failed": 0,
+        "prompt_tokens": 16,
+        "prompt_tokens_complete": True,
+        "completion_tokens": 9,
+        "completion_tokens_complete": True,
+        "total_tokens": 25,
+        "token_totals_complete": True,
+        "estimated_cost": None,
+        "cost_status": "not_configured",
+        "agent_stages": {
+            "planner": {"duration_ms": 3200, "status": "success"},
+        },
+        "stages": {
+            "planner": {
+                "duration_ms": 3000, "calls_attempted": 1,
+                "prompt_tokens": 10, "prompt_tokens_complete": True,
+                "completion_tokens": 9, "completion_tokens_complete": True,
+                "total_tokens": 19, "token_totals_complete": True,
+            },
+            "evidence_retrieval": {
+                "duration_ms": 500, "calls_attempted": 1,
+                "prompt_tokens": 6, "prompt_tokens_complete": True,
+                "completion_tokens": 0, "completion_tokens_complete": True,
+                "total_tokens": 6, "token_totals_complete": True,
+            },
+        },
+        "tools": {
+            "get_incident": {
+                "calls_attempted": 2, "calls_successful": 2, "calls_failed": 0,
+                "duration_ms": 1200, "average_duration_ms": 600,
+            },
+        },
+        "requests": [
+            {
+                "stage": "planner", "request_type": "chat", "deployment": "offline-chat",
+                "duration_ms": 3000, "prompt_tokens": 10, "completion_tokens": 9,
+                "total_tokens": 19, "finish_reason": "stop", "status": "success",
+            },
+            {
+                "stage": "evidence_retrieval", "request_type": "embeddings",
+                "deployment": "offline-embedding", "duration_ms": 500,
+                "prompt_tokens": 6, "completion_tokens": None, "total_tokens": 6,
+                "finish_reason": None, "status": "success",
+            },
+        ],
+    }
 
 
 class PresentationTests(unittest.TestCase):
@@ -83,6 +141,14 @@ class PresentationTests(unittest.TestCase):
             )
             self.assertIsNone(load_source_document("application-insights://checkout", [root]))
             self.assertIsNone(load_source_document("missing.md", [root]))
+
+    def test_metrics_styles_wrap_values_and_stack_cards_on_narrow_screens(self):
+        css = (Path(__file__).resolve().parents[1] / "assets" / "dashboard.css").read_text()
+        self.assertIn('[class*="st-key-investigation_metrics_"]', css)
+        self.assertIn("white-space: normal;", css)
+        self.assertIn("text-overflow: clip;", css)
+        self.assertIn("flex-basis: 100%;", css)
+        self.assertIn("@media (max-width: 640px)", css)
 
 
 class FrontendWorkflowTests(unittest.TestCase):
@@ -141,6 +207,131 @@ class FrontendWorkflowTests(unittest.TestCase):
         self.assertEqual(self.app.session_state.investigations[0]["report"], self.report)
         self.assertEqual(self.app.session_state.investigations[0]["sources"], self.evidence)
         self.assertTrue(any("not an independent verification" in element.value for element in self.app.info))
+
+    def test_investigation_metrics_are_attached_to_the_matching_history_item(self):
+        metrics = {
+            "investigation_id": "test-id",
+            "duration_ms": 2400,
+            "calls_attempted": 3,
+            "calls_successful": 2,
+            "calls_failed": 1,
+            "request_metrics_complete": True,
+            "total_tokens": None,
+            "token_totals_complete": False,
+            "stages": {
+                "planner": {
+                    "calls_attempted": 1,
+                    "calls_successful": 1,
+                    "calls_failed": 0,
+                    "total_tokens": 25,
+                    "token_totals_complete": True,
+                },
+            },
+        }
+        with patch(
+            "backend.observability.consume_completed_metrics",
+            side_effect=[None, metrics],
+        ):
+            self.investigate()
+
+        self.assertEqual(self.app.session_state.investigations[0]["metrics"], metrics)
+        metric_values = [item.value for item in self.app.metric]
+        self.assertIn("2.40 s", metric_values)
+        self.assertIn("3", metric_values)
+        self.assertIn("3 attempted, 2 succeeded, 1 failed",
+                      [item.value for item in self.app.caption])
+        self.assertIn("Unavailable (usage incomplete)", metric_values)
+        self.assertIn("Unavailable", metric_values)
+        self.assertTrue(any("Verified pricing is not configured" in item.value
+                            for item in self.app.caption))
+
+    def test_advanced_metrics_render_safe_tables_and_preserve_report_tabs(self):
+        metrics = _advanced_metrics()
+        secret = "SECRET_PRIVATE_PAYLOAD"
+        metrics["api_key"] = secret
+        metrics["investigation_id"] = "UNNECESSARY_INTERNAL_IDENTIFIER"
+        metrics["requests"][0].update({
+            "request_id": "PRIVATE_REQUEST_IDENTIFIER", "prompt": secret,
+            "response": secret, "authorization": secret,
+        })
+        with patch(
+            "backend.observability.consume_completed_metrics", side_effect=[None, metrics],
+        ):
+            self.investigate()
+
+        self.assertEqual(len(self.app.dataframe), 4)
+        latency, tokens, tools, requests = [item.value for item in self.app.dataframe]
+        self.assertEqual(set(latency["Stage"]), {"Planner", "Evidence retrieval"})
+        self.assertNotIn("Critic", set(latency["Stage"]))
+        self.assertEqual(latency.loc[latency["Stage"] == "Planner", "Stage runtime (s)"].iloc[0], 3.2)
+        self.assertEqual(tokens.loc[tokens["Stage"] == "Planner", "Total tokens"].iloc[0], "19")
+        self.assertEqual(tools.iloc[0]["Tool"], "get_incident")
+        self.assertEqual(tools.iloc[0]["Calls"], 2)
+        self.assertEqual(tools.iloc[0]["Average per call"], "0.60 s")
+        self.assertEqual(requests.iloc[1]["Request type"], "Embedding")
+        self.assertEqual(requests.iloc[1]["Completion tokens"], "N/A (embedding)")
+        rendered = str([item.value for item in self.app.metric]) + str(
+            [item.value for item in self.app.caption]
+        ) + str([item.value.to_dict("records") for item in self.app.dataframe])
+        for sensitive in (secret, "UNNECESSARY_INTERNAL_IDENTIFIER", "PRIVATE_REQUEST_IDENTIFIER"):
+            self.assertNotIn(sensitive, rendered)
+        advanced = next(item for item in self.app.expander if item.label == "Advanced investigation metrics")
+        self.assertFalse(advanced.proto.expanded)
+        self.assertEqual([tab.label for tab in self.app.tabs], ["Overview", "Deployment", "Runbook", "Evidence", "Review"])
+        self.assertEqual(self.download.call_args.kwargs["data"], self.report)
+
+    def test_advanced_metrics_history_reruns_restore_snapshots_without_sdk_calls(self):
+        first = _advanced_metrics()
+        second = copy.deepcopy(first)
+        second["total_tokens"] = 99
+        second["duration_ms"] = 9000
+        with patch("backend.observability.consume_completed_metrics", side_effect=[None, first]):
+            self.investigate("First metrics investigation")
+        with patch("backend.observability.consume_completed_metrics", side_effect=[None, second]):
+            self.investigate("Second metrics investigation")
+        self.assertEqual(self.app.metric[0].value, "9.00 s")
+        self.app.selectbox(key="history_2").select_index(1).run()
+        self.assertFalse(self.app.exception)
+        self.assertEqual(self.app.metric[0].value, "6.00 s")
+        self.assertEqual(self.app.metric[2].value, "25")
+        self.app.run()
+        self.assertEqual(self.app.metric[0].value, "6.00 s")
+        self.assertEqual(self.runner.run_investigation.call_count, 2)
+        self.assertEqual(self.app.session_state.investigations[0]["metrics"], first)
+        self.assertEqual(self.app.session_state.investigations[1]["metrics"], second)
+
+    def test_incomplete_metrics_do_not_display_partial_totals_as_definitive(self):
+        metrics = _advanced_metrics()
+        metrics.update({
+            "total_tokens": 9999, "token_totals_complete": False,
+            "request_metrics_complete": False, "calls_attempted": 9999,
+            "llm_duration_ms": None, "tool_duration_ms": None,
+            "tool_metrics_complete": False, "tools": {}, "stages": {},
+        })
+        metrics["requests"][0].update({"total_tokens": None, "completion_tokens": None, "status": "failed"})
+        with patch("backend.observability.consume_completed_metrics", side_effect=[None, metrics]):
+            self.investigate()
+        self.assertEqual(self.app.metric[1].value, "Unavailable")
+        self.assertEqual(self.app.metric[2].value, "Unavailable")
+        self.assertNotIn("9999", str([item.value for item in self.app.metric]))
+        captions = "\n".join(item.value for item in self.app.caption)
+        self.assertIn("Tool telemetry is incomplete", captions)
+        self.assertIn("observed records only", captions)
+        requests = self.app.dataframe[-1].value
+        self.assertEqual(requests.iloc[0]["Total tokens"], "Unavailable")
+        self.assertEqual(requests.iloc[0]["Status"], "failed")
+
+    def test_cost_requires_explicit_verified_currency_and_complete_usage(self):
+        metrics = _advanced_metrics()
+        metrics.update({"estimated_cost": 0.0123, "cost_status": "verified", "cost_currency": "USD"})
+        with patch("backend.observability.consume_completed_metrics", side_effect=[None, metrics]):
+            self.investigate()
+        self.assertEqual(self.app.metric[3].value, "$0.0123")
+        metrics = copy.deepcopy(metrics)
+        metrics["cost_status"] = "not_configured"
+        with patch("backend.observability.consume_completed_metrics", side_effect=[None, metrics]):
+            self.investigate("Unverified cost")
+        self.assertEqual(self.app.metric[3].value, "Unavailable")
 
     def test_integration_choices(self):
         self.assertEqual(self.app.selectbox(key="include_azure_devops").options, ["Exclude", "Include"])

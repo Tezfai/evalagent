@@ -19,6 +19,7 @@
 !backend/evalagent_mcp_server.py
 !backend/investigation_runner.py
 !backend/investigator_agent.py
+!backend/observability.py
 !backend/rag_ai_search.py
 !backend/runbook_agent.py
 !backend/search_ai_search.py

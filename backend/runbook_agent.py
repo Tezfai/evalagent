@@ -5,6 +5,11 @@ import re
 from dotenv import load_dotenv
 from openai import AzureOpenAI
 
+try:
+    from .observability import agent_span, tracked_chat_completion
+except ImportError:
+    from observability import agent_span, tracked_chat_completion
+
 load_dotenv()
 
 GPT5_MINI_DEPLOYMENT = os.getenv(
@@ -94,6 +99,7 @@ def _purpose_from_runbook(runbook_content):
     return ""
 
 
+@agent_span("runbook_analysis")
 def analyze_runbook(runbook_file, runbook_content):
     """Analyze supplied runbook content and return a Python dictionary."""
     if not runbook_file or not str(runbook_file).strip():
@@ -101,7 +107,9 @@ def analyze_runbook(runbook_file, runbook_content):
     if not runbook_content or not str(runbook_content).strip():
         raise ValueError("runbook_content must not be empty")
 
-    response = client.chat.completions.create(
+    response = tracked_chat_completion(
+        "runbook_analysis",
+        client,
         model=GPT5_MINI_DEPLOYMENT,
         messages=[
             {"role": "system", "content": SYSTEM_PROMPT},

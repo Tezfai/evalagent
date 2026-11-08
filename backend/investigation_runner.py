@@ -6,6 +6,21 @@ from datetime import datetime, timedelta, timezone
 from dotenv import load_dotenv
 
 try:
+    from .observability import (
+        agent_span,
+        emit_event,
+        observed_investigation,
+        tracked_chat_completion,
+    )
+except ImportError:
+    from observability import (
+        agent_span,
+        emit_event,
+        observed_investigation,
+        tracked_chat_completion,
+    )
+
+try:
     from .deployment_agent import analyze_deployment
     from .investigator_agent import (
         GPT5_MINI_DEPLOYMENT,
@@ -555,9 +570,12 @@ def _combine_document_content(evidence, file_name):
     return "\n\n".join(contents)
 
 
+@agent_span("report_generation")
 def _generate_report(messages):
     def request(max_completion_tokens):
-        response = client.chat.completions.create(
+        response = tracked_chat_completion(
+            "report_generation",
+            client,
             model=GPT5_MINI_DEPLOYMENT,
             messages=messages,
             response_format={"type": "json_object"},
@@ -566,11 +584,6 @@ def _generate_report(messages):
         choice = response.choices[0]
         content = getattr(choice.message, "content", None)
         finish_reason = getattr(choice, "finish_reason", None)
-        print(
-            "Report generator: "
-            f"finish_reason={finish_reason}, "
-            f"has_content={bool(content)}"
-        )
         return response, content, finish_reason
 
     response, report_text, finish_reason = request(5000)
@@ -588,6 +601,7 @@ def _generate_report(messages):
     )
 
 
+@observed_investigation
 def run_investigation(
     question,
     include_azure_devops=False,
@@ -940,9 +954,17 @@ def run_investigation(
         )
 
     if primary_evidence:
-        print(f"Primary Evidence: {primary_evidence['file']}")
+        emit_event(
+            "evidence.primary_selected",
+            component="evalagent.investigation",
+            status="selected",
+        )
     else:
-        print("Primary Evidence: None identified")
+        emit_event(
+            "evidence.primary_selected",
+            component="evalagent.investigation",
+            status="unavailable",
+        )
 
     report_text = _generate_report([
         {"role": "system", "content": REPORT_SYSTEM_PROMPT},

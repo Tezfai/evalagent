@@ -342,6 +342,45 @@ The test command works without a local `.env` file, API keys, PATs, or an Azure 
 
 MCP subprocesses receive an explicit configuration allowlist for Search, OpenAI embeddings, Azure DevOps, Azure Monitor, Azure identity discovery, proxy/CA settings, and dotenv/bytecode controls. The MCP SDK retains its safe OS environment defaults. Unrelated environment variables are not forwarded, and credentials are never printed by the forwarding code. Managed identity and injected settings therefore do not depend on a local `.env` file; certificate and federated-token file paths still require the referenced files to be available in the process environment.
 
+### LLM observability
+
+Each `run_investigation` call owns one correlation scope and returns its
+existing `(report, sources)` tuple. The Streamlit UI retrieves the associated
+in-memory metrics separately, so direct backend calls and UI investigations
+share the same instrumentation without changing the backend return contract.
+JSON console logs include request stage, deployment, duration, finish reason,
+request outcome, and available Azure OpenAI usage counts; prompts, responses,
+and retrieved evidence are not logged. The UI shows attempted, successful,
+and failed request counts and reports token totals as unavailable whenever
+usage is incomplete. Estimated cost remains unavailable because no verified
+deployment pricing is configured.
+
+The collapsed **Advanced investigation metrics** section adds agent-function
+runtimes with horizontal duration bars, cumulative SDK request and tool-call
+durations, per-stage prompt/completion/total tokens, tool counts and outcomes,
+and payload-free individual SDK request details. Each snapshot is saved with
+its investigation in Streamlit session history; reruns only render that
+snapshot. Agent runtimes include their SDK calls and explicit retries.
+Tool durations measure the existing provider facade, including MCP startup,
+transport, and retrieval. These durations can overlap (including embedding
+requests inside tools), so they are not additive wall-clock time and
+unattributed time is deliberately unavailable. Missing usage, failed metric
+collection, and old snapshots without advanced fields remain unavailable.
+No extra network requests, database, or monitoring dependency is introduced.
+
+MCP child processes receive only the active investigation ID in addition to
+the existing configuration allowlist. Their stderr is captured separately
+from stdio JSON-RPC, recognized request-metric records are aggregated by the
+parent, and non-metric child output is suppressed rather than copied into
+application logs.
+Each child tool emits a payload-free completion checkpoint with its observed
+SDK request count. Missing checkpoints, lost request records, or incomplete
+child collection make parent request/token totals unavailable, including when
+no request records arrive. A verified zero-request checkpoint still permits
+complete zero totals. Collector initialization failures disable metrics for
+that investigation without preventing execution; unavailable tool timing is
+never reported as zero.
+
 ---
 
 ## 🛡️ Factual Grounding & Design Principles

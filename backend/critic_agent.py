@@ -5,6 +5,11 @@ import sys
 from dotenv import load_dotenv
 from openai import AzureOpenAI
 
+try:
+    from .observability import agent_span, tracked_chat_completion
+except ImportError:
+    from observability import agent_span, tracked_chat_completion
+
 load_dotenv()
 
 GPT5_MINI_DEPLOYMENT = os.getenv(
@@ -103,6 +108,7 @@ VALID_REPORT_QUALITY = {"Weak", "Fair", "Strong"}
 VALID_EVIDENCE_COVERAGE = {"Weak", "Partial", "Strong"}
 
 
+@agent_span("critic")
 def review_report(report_text, evidence):
     """Review a report against supplied evidence and return a Python dictionary."""
     if not report_text or not str(report_text).strip():
@@ -114,7 +120,9 @@ def review_report(report_text, evidence):
     if not evidence_text.strip():
         raise ValueError("evidence must not be empty")
 
-    response = client.chat.completions.create(
+    response = tracked_chat_completion(
+        "critic",
+        client,
         model=GPT5_MINI_DEPLOYMENT,
         messages=[
             {"role": "system", "content": SYSTEM_PROMPT},

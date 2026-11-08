@@ -128,9 +128,44 @@ button:focus-visible {
 }
 [data-testid="stTabs"] [role="tab"] { flex-shrink: 0; }
 [data-testid="stTabs"] [role="tab"][aria-selected="true"] p { color: var(--accent); }
+[class*="st-key-investigation_metrics_"] [data-testid="stMetric"] {
+    padding: 0.75rem;
+    background: rgba(16, 21, 28, 0.35);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    min-width: 0;
+}
+[class*="st-key-investigation_metrics_"] [data-testid="stMetricValue"],
+[class*="st-key-investigation_metrics_"] [data-testid="stMetricValue"] > div,
+[class*="st-key-investigation_metrics_"] [data-testid="stMetricLabel"] p {
+    white-space: normal;
+    overflow: visible;
+    text-overflow: clip;
+    overflow-wrap: anywhere;
+}
+[class*="st-key-investigation_metrics_"] [data-testid="stMetricValue"] {
+    font-size: clamp(1.05rem, 2vw, 1.65rem);
+    line-height: 1.35;
+}
+[class*="st-key-investigation_metrics_"] [data-testid="stCaptionContainer"] {
+    overflow-wrap: anywhere;
+}
+@media (max-width: 900px) {
+    [class*="st-key-investigation_metrics_"] [data-testid="stHorizontalBlock"] {
+        flex-wrap: wrap;
+    }
+    [class*="st-key-investigation_metrics_"] [data-testid="stColumn"] {
+        min-width: calc(50% - 1rem);
+        flex: 1 1 calc(50% - 1rem);
+    }
+}
 @media (max-width: 640px) {
     [data-testid="stMainBlockContainer"] { padding: 4.5rem 1rem 5rem; }
     [data-testid="stTabs"] [role="tablist"] { gap: 0.6rem; }
+    [class*="st-key-investigation_metrics_"] [data-testid="stColumn"] {
+        min-width: 100%;
+        flex-basis: 100%;
+    }
 }
 @media (prefers-reduced-motion: reduce) {
     button { transition: none; }

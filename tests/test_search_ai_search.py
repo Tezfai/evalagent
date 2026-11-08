@@ -23,7 +23,7 @@ class SearchDocumentStdoutTests(unittest.TestCase):
             },
         )
 
-    def test_missing_document_diagnostics_do_not_write_to_stdout(self):
+    def test_missing_document_diagnostics_are_structured_without_document_names(self):
         fake_results = [{"file": "incident-1042.md", "chunk_id": 0, "content": "x"}]
         fake_client = mock.Mock()
         fake_client.search.return_value = fake_results
@@ -35,6 +35,7 @@ class SearchDocumentStdoutTests(unittest.TestCase):
             mock.patch.object(
                 search_ai_search, "SearchClient", return_value=fake_client
             ),
+            mock.patch.object(search_ai_search, "emit_event") as emit_event,
             redirect_stdout(stdout),
             redirect_stderr(stderr),
         ):
@@ -42,8 +43,12 @@ class SearchDocumentStdoutTests(unittest.TestCase):
 
         self.assertEqual(results, [])
         self.assertEqual(stdout.getvalue(), "")
-        self.assertIn("Candidate files:", stderr.getvalue())
-        self.assertIn("incident-1042.md", stderr.getvalue())
+        self.assertEqual(stderr.getvalue(), "")
+        emit_event.assert_called_once_with(
+            "retrieval.document_not_found",
+            component="evalagent.retrieval",
+            candidate_count=1,
+        )
 
     def test_matching_document_writes_no_diagnostics(self):
         fake_results = [{"file": "incident-1042.md", "chunk_id": 0, "content": "x"}]
@@ -56,12 +61,14 @@ class SearchDocumentStdoutTests(unittest.TestCase):
             mock.patch.object(
                 search_ai_search, "SearchClient", return_value=fake_client
             ),
+            mock.patch.object(search_ai_search, "emit_event") as emit_event,
             redirect_stdout(stdout),
         ):
             results = search_ai_search.search_document("incident-1042.md")
 
         self.assertEqual(len(results), 1)
         self.assertEqual(stdout.getvalue(), "")
+        emit_event.assert_not_called()
 
 
 if __name__ == "__main__":

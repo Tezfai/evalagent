@@ -169,14 +169,13 @@ class InvestigationRunnerTests(unittest.TestCase):
             self._response(None, "length"),
             self._response('{"Incident": "supported"}'),
         ]
-        output = io.StringIO()
         with (
             patch.object(
                 investigation_runner.client.chat.completions,
                 "create",
                 side_effect=responses,
             ) as create,
-            redirect_stdout(output),
+            self.assertLogs("evalagent", level="INFO") as logs,
         ):
             report_text = investigation_runner._generate_report(
                 [{"role": "user", "content": "secret evidence"}]
@@ -192,8 +191,9 @@ class InvestigationRunnerTests(unittest.TestCase):
             create.call_args_list[1].kwargs["max_completion_tokens"],
             7000,
         )
-        self.assertIn("finish_reason=length, has_content=False", output.getvalue())
-        self.assertNotIn("secret evidence", output.getvalue())
+        log_text = "\n".join(logs.output)
+        self.assertIn('"finish_reason":"length"', log_text)
+        self.assertNotIn("secret evidence", log_text)
 
     def test_two_empty_report_responses_raise_without_third_request(self):
         responses = [
@@ -1012,14 +1012,13 @@ class DeploymentAgentTests(unittest.TestCase):
             self._response(None, "length"),
             self._response(None, "length"),
         ]
-        output = io.StringIO()
         with (
             patch.object(
                 deployment_agent.client.chat.completions,
                 "create",
                 side_effect=responses,
             ) as create,
-            redirect_stdout(output),
+            self.assertLogs("evalagent", level="INFO") as logs,
         ):
             analysis = deployment_agent.analyze_deployment(
                 "deployment-886.md",
@@ -1028,8 +1027,9 @@ class DeploymentAgentTests(unittest.TestCase):
 
         self.assertIsNone(analysis)
         self.assertEqual(create.call_count, 2)
-        self.assertNotIn("SECRET deployment evidence", output.getvalue())
-        self.assertIn("finish_reason=length", output.getvalue())
+        log_text = "\n".join(logs.output)
+        self.assertNotIn("SECRET deployment evidence", log_text)
+        self.assertIn('"finish_reason":"length"', log_text)
 
     def test_explicit_risk_rating_in_evidence_is_preserved(self):
         result = self._response(
@@ -1336,7 +1336,10 @@ class EvalagentMcpClientTests(unittest.TestCase):
         unrelated = {"UNRELATED_SECRET": "must-not-forward", "AZURE_STORAGE_ACCOUNT_NAME": "not-used-by-tools", "EVALAGENT_TOOL_PROVIDER": "mcp", "PATH": "safe-system-path"}
         with patch.dict("os.environ", {**configuration, **unrelated}, clear=True):
             parameters = evalagent_mcp_client._server_parameters()
-            self.assertEqual(parameters.env, configuration)
+            self.assertEqual(
+                parameters.env,
+                {**configuration, "EVALAGENT_PROCESS_ROLE": "mcp_server"},
+            )
             from mcp.client.stdio import get_default_environment
             combined = get_default_environment() | parameters.env
             self.assertEqual(combined["PATH"], unrelated["PATH"])
@@ -1347,7 +1350,10 @@ class EvalagentMcpClientTests(unittest.TestCase):
     def test_subprocess_does_not_invent_missing_configuration(self):
         with patch.dict("os.environ", {}, clear=True):
             parameters = evalagent_mcp_client._server_parameters()
-        self.assertEqual(parameters.env, {})
+        self.assertEqual(
+            parameters.env,
+            {"EVALAGENT_PROCESS_ROLE": "mcp_server"},
+        )
 
     def test_real_stdio_server_lists_tools_without_dotenv_or_azure_calls(self):
         with patch.dict("os.environ", {"PYTHON_DOTENV_DISABLED": "1", "PYTHONDONTWRITEBYTECODE": "1"}):

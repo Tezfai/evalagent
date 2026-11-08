@@ -5,6 +5,11 @@ import sys
 from dotenv import load_dotenv
 from openai import AzureOpenAI
 
+try:
+    from .observability import agent_span, emit_event, tracked_chat_completion
+except ImportError:
+    from observability import agent_span, emit_event, tracked_chat_completion
+
 load_dotenv()
 
 GPT5_MINI_DEPLOYMENT = os.getenv(
@@ -52,6 +57,7 @@ NOT_ESTABLISHED = "Not established by retrieved evidence"
 VALID_RISK_RATINGS = {"Low", "Medium", "High", NOT_ESTABLISHED}
 
 
+@agent_span("deployment_analysis")
 def analyze_deployment(deployment_file, deployment_content):
     """Analyze deployment evidence and return the result as a Python dictionary."""
     if not deployment_file or not str(deployment_file).strip():
@@ -70,7 +76,9 @@ def analyze_deployment(deployment_file, deployment_content):
         },
     ]
 
-    response = client.chat.completions.create(
+    response = tracked_chat_completion(
+        "deployment_analysis",
+        client,
         model=GPT5_MINI_DEPLOYMENT,
         messages=messages,
         response_format={"type": "json_object"},
@@ -82,7 +90,9 @@ def analyze_deployment(deployment_file, deployment_content):
         getattr(response.choices[0], "finish_reason", None) == "length"
         and not response_text
     ):
-        response = client.chat.completions.create(
+        response = tracked_chat_completion(
+            "deployment_analysis",
+            client,
             model=GPT5_MINI_DEPLOYMENT,
             messages=messages,
             response_format={"type": "json_object"},
@@ -91,10 +101,11 @@ def analyze_deployment(deployment_file, deployment_content):
         response_text = response.choices[0].message.content
 
     if not response_text:
-        print(
-            "Deployment analyzer: "
-            f"finish_reason={getattr(response.choices[0], 'finish_reason', None)}, "
-            f"has_content=False"
+        emit_event(
+            "agent.response_empty",
+            component="evalagent.agent",
+            stage="deployment_analysis",
+            finish_reason=getattr(response.choices[0], "finish_reason", None),
         )
         return None
 

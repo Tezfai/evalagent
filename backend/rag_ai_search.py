@@ -6,6 +6,19 @@ from azure.search.documents.models import VectorizedQuery
 from dotenv import load_dotenv
 from openai import AzureOpenAI
 
+try:
+    from .observability import (
+        agent_span,
+        tracked_chat_completion,
+        tracked_embeddings_create,
+    )
+except ImportError:
+    from observability import (
+        agent_span,
+        tracked_chat_completion,
+        tracked_embeddings_create,
+    )
+
 load_dotenv()
 
 client = AzureOpenAI(
@@ -15,12 +28,15 @@ client = AzureOpenAI(
 )
 
 
+@agent_span("conversation")
 def ask_question(question):
     search_endpoint = os.getenv("AZURE_SEARCH_ENDPOINT")
     search_key = os.getenv("AZURE_SEARCH_KEY")
     search_index_name = os.getenv("AZURE_SEARCH_INDEX")
 
-    response = client.embeddings.create(
+    response = tracked_embeddings_create(
+        "conversation_retrieval",
+        client,
         model=os.getenv("AZURE_OPENAI_EMBEDDING_DEPLOYMENT"),
         input=question
     )
@@ -62,7 +78,9 @@ def ask_question(question):
             "chunk_id": chunk_id,
         })
 
-    answer = client.chat.completions.create(
+    answer = tracked_chat_completion(
+        "conversation_answer",
+        client,
         model=os.getenv("AZURE_OPENAI_CHAT_DEPLOYMENT"),
         messages=[
             {

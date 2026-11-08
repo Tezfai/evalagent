@@ -1,11 +1,15 @@
 import os
-import sys
 
 from azure.core.credentials import AzureKeyCredential
 from azure.search.documents import SearchClient
 from azure.search.documents.models import VectorizedQuery
 from dotenv import load_dotenv
 from openai import AzureOpenAI
+
+try:
+    from .observability import emit_event, tracked_embeddings_create
+except ImportError:
+    from observability import emit_event, tracked_embeddings_create
 
 load_dotenv()
 
@@ -35,7 +39,9 @@ def search_chunks(query):
         api_version="2024-12-01-preview",
     )
 
-    embedding_response = openai_client.embeddings.create(
+    embedding_response = tracked_embeddings_create(
+        "evidence_retrieval",
+        openai_client,
         model=os.getenv("AZURE_OPENAI_EMBEDDING_DEPLOYMENT"),
         input=query,
     )
@@ -108,10 +114,11 @@ def search_document(file_name):
         == requested_file
     ]
     if not matching_results:
-        # stdout is reserved for MCP stdio JSON-RPC traffic; diagnostics go to stderr.
-        print("Candidate files:", file=sys.stderr)
-        for result in results:
-            print(result.get("file"), file=sys.stderr)
+        emit_event(
+            "retrieval.document_not_found",
+            component="evalagent.retrieval",
+            candidate_count=len(results),
+        )
     results = sorted(
         matching_results,
         key=lambda result: int(result.get("chunk_id", 0)),

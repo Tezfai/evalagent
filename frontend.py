@@ -1,3 +1,4 @@
+import math
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -240,6 +241,213 @@ def display_report(report, sources, report_key):
                 st.caption(f"No {group.lower()} section was returned.")
             if group == "Evidence":
                 display_sources(sources, grouped=True)
+
+
+def _metric_number(value):
+    return (
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and math.isfinite(value)
+        and value >= 0
+    )
+
+
+def _duration_text(value):
+    return f"{value / 1000:.2f} s" if _metric_number(value) else "Unavailable"
+
+
+def _token_text(metrics, field, flag):
+    value = metrics.get(field)
+    return (
+        f"{value:,}"
+        if metrics.get(flag) is True and isinstance(value, int)
+        and _metric_number(value) else "Unavailable (usage incomplete)"
+    )
+
+
+def _stage_label(stage):
+    if not isinstance(stage, str) or not re.fullmatch(r"[A-Za-z][A-Za-z0-9_.-]{0,63}", stage):
+        return "Unknown stage"
+    return stage.replace("_", " ").capitalize()
+
+
+def _request_token_text(value):
+    return f"{value:,}" if isinstance(value, int) and _metric_number(value) else "Unavailable"
+
+
+def _metric_cards(cards):
+    for column, (label, value, caption) in zip(st.columns(len(cards)), cards):
+        with column:
+            st.metric(label, value)
+            if caption:
+                st.caption(caption)
+
+
+def display_investigation_metrics(metrics, key):
+    with st.container(key=f"investigation_metrics_{key}"):
+        st.subheader("Investigation metrics")
+        if not isinstance(metrics, dict):
+            st.caption("Metrics are unavailable for this investigation.")
+            metrics = {}
+        counts = [metrics.get(field) for field in (
+            "calls_attempted", "calls_successful", "calls_failed",
+        )]
+        counts_complete = metrics.get("request_metrics_complete") is True and all(
+            isinstance(value, int) and _metric_number(value) for value in counts
+        )
+        calls_caption = (
+            f"{counts[0]} attempted, {counts[1]} succeeded, {counts[2]} failed"
+            if counts_complete else "Request metrics incomplete or unavailable."
+        )
+        tokens = _token_text(metrics, "total_tokens", "token_totals_complete")
+        cost = metrics.get("estimated_cost")
+        verified_cost = (
+            metrics.get("cost_status") == "verified"
+            and metrics.get("cost_currency") == "USD"
+            and counts_complete and metrics.get("token_totals_complete") is True
+            and _metric_number(cost)
+        )
+        _metric_cards([
+            ("Duration", _duration_text(metrics.get("duration_ms")), "Investigation wall-clock time."),
+            ("LLM requests", f"{counts[0]:,}" if counts_complete else "Unavailable", calls_caption),
+            ("Total tokens", tokens if not tokens.startswith("Unavailable") else "Unavailable",
+             "" if not tokens.startswith("Unavailable") else "Usage incomplete or unavailable."),
+            ("Estimated cost", f"${cost:.4f}" if verified_cost else "Unavailable",
+             "USD; verified configured pricing." if verified_cost else "Verified pricing is not configured or usage is incomplete."),
+        ])
+        with st.expander("Advanced investigation metrics", expanded=False):
+            display_advanced_investigation_metrics(metrics)
+
+
+def display_advanced_investigation_metrics(metrics):
+    st.subheader("Performance overview")
+    _metric_cards([
+        ("Investigation elapsed", _duration_text(metrics.get("duration_ms")), "Wall-clock time."),
+        ("LLM request time", _duration_text(metrics.get("llm_duration_ms")), "Cumulative observed SDK request durations."),
+        ("Tool execution time", _duration_text(metrics.get("tool_duration_ms")), "Cumulative observed tool-call durations."),
+        ("Other / unattributed", "Unavailable", "Cannot reliably subtract overlapping measurements."),
+    ])
+    st.caption(
+        "Cumulative durations are not additive wall-clock time. Tool time includes retrieval "
+        "and MCP startup/transport; embedding requests can overlap that tool time. "
+        "SDK-internal retries are included in request latency, not separate observed requests."
+    )
+
+    stages = metrics.get("stages")
+    stages = stages if isinstance(stages, dict) else {}
+    agents = metrics.get("agent_stages")
+    agents = agents if isinstance(agents, dict) else {}
+    executed = sorted(set(stages) | set(agents))
+    latency_rows = []
+    token_rows = []
+    for stage in executed:
+        requests = stages.get(stage, {})
+        runtime = agents.get(stage, {})
+        if not isinstance(requests, dict) or not isinstance(runtime, dict):
+            continue
+        duration = runtime.get("duration_ms")
+        latency_rows.append({
+            "Stage": _stage_label(stage),
+            "Stage runtime (s)": duration / 1000 if _metric_number(duration) else None,
+            "LLM request duration": _duration_text(requests.get("duration_ms")),
+            "LLM requests": (
+                str(requests["calls_attempted"])
+                if metrics.get("request_metrics_complete") is True
+                and isinstance(requests.get("calls_attempted"), int)
+                else "Unavailable"
+            ),
+            "Status": runtime.get("status") if runtime.get("status") in {
+                "success", "failed", "mixed",
+            } else "Unavailable",
+        })
+        token_rows.append({
+            "Stage": _stage_label(stage),
+            "Prompt tokens": _token_text(requests, "prompt_tokens", "prompt_tokens_complete"),
+            "Completion tokens": _token_text(requests, "completion_tokens", "completion_tokens_complete"),
+            "Total tokens": _token_text(requests, "total_tokens", "token_totals_complete"),
+        })
+
+    st.subheader("Agent latency breakdown")
+    if latency_rows:
+        max_duration = max((row["Stage runtime (s)"] or 0 for row in latency_rows), default=1)
+        st.dataframe(
+            latency_rows, hide_index=True, width="stretch",
+            column_config={
+                "Stage runtime (s)": st.column_config.ProgressColumn(
+                    "Stage runtime (s)", min_value=0, max_value=max(max_duration, 1),
+                    format="%.2f s",
+                ),
+            },
+        )
+        st.caption(
+            "Runtime measures the entire agent function, including its SDK calls and explicit retries. "
+            "Blank runtime bars mean unavailable (for example, retrieval-only embedding stages). "
+            "Only observed stages are shown."
+        )
+    else:
+        st.caption("Agent runtime metrics are unavailable or no agent stages were observed.")
+
+    st.subheader("Token usage breakdown")
+    _metric_cards([
+        ("Prompt tokens", _token_text(metrics, "prompt_tokens", "prompt_tokens_complete"), ""),
+        ("Completion tokens", _token_text(metrics, "completion_tokens", "completion_tokens_complete"), ""),
+        ("Total tokens", _token_text(metrics, "total_tokens", "token_totals_complete"), ""),
+    ])
+    if token_rows:
+        st.dataframe(token_rows, hide_index=True, width="stretch")
+    st.caption("Embedding requests contribute prompt/total tokens, not completion tokens. Incomplete totals are unavailable.")
+
+    st.subheader("MCP / tool execution")
+    tools = metrics.get("tools")
+    if isinstance(tools, dict) and tools:
+        tool_rows = []
+        for tool, record in sorted(tools.items()):
+            if not isinstance(record, dict):
+                continue
+            tool_rows.append({
+                "Tool": tool if isinstance(tool, str)
+                and re.fullmatch(r"get_[a-z_]{1,64}", tool) else "Unknown tool",
+                "Calls": record.get("calls_attempted"),
+                "Total observed duration": _duration_text(record.get("duration_ms")),
+                "Average per call": _duration_text(record.get("average_duration_ms")),
+                "Succeeded": record.get("calls_successful"),
+                "Failed": record.get("calls_failed"),
+            })
+        st.dataframe(tool_rows, hide_index=True, width="stretch")
+    else:
+        st.caption("No tool calls observed." if metrics.get("tool_metrics_complete") is True
+                   else "Tool execution metrics are unavailable.")
+    if metrics.get("tool_metrics_complete") is False:
+        st.caption("Tool telemetry is incomplete; totals are unavailable.")
+
+    with st.expander("Individual LLM SDK requests", expanded=False):
+        records = metrics.get("requests")
+        request_rows = []
+        for record in records if isinstance(records, list) else []:
+            if not isinstance(record, dict):
+                continue
+            request_type = record.get("request_type")
+            deployment = record.get("deployment")
+            finish = record.get("finish_reason")
+            request_rows.append({
+                "Stage": _stage_label(record.get("stage")),
+                "Request type": {"chat": "Chat", "embeddings": "Embedding"}.get(request_type, "Unavailable"),
+                "Deployment": deployment if isinstance(deployment, str)
+                and re.fullmatch(r"[A-Za-z][A-Za-z0-9_.-]{0,63}", deployment) else "Unavailable",
+                "Duration": _duration_text(record.get("duration_ms")),
+                "Prompt tokens": _request_token_text(record.get("prompt_tokens")),
+                "Completion tokens": "N/A (embedding)" if request_type == "embeddings"
+                else _request_token_text(record.get("completion_tokens")),
+                "Total tokens": _request_token_text(record.get("total_tokens")),
+                "Finish reason": finish if finish in {"stop", "length", "content_filter", "tool_calls", "function_call"} else "Unavailable",
+                "Status": record.get("status") if record.get("status") in {"success", "failed"} else "Unavailable",
+            })
+        if request_rows:
+            st.dataframe(request_rows, hide_index=True, width="stretch")
+            if metrics.get("request_metrics_complete") is not True:
+                st.caption("Request collection is incomplete. These are observed records only, not a definitive request total.")
+        else:
+            st.caption("Request-level details are unavailable or no SDK requests were observed.")
 
 
 def display_report_actions(report, report_key):

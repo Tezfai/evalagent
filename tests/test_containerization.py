@@ -42,7 +42,7 @@ class ContainerizationTests(unittest.TestCase):
             with self.subTest(path=path):
                 self.assertTrue((ROOT / path).is_file())
                 self.assertTrue(self.included(path))
-        for path in ("app.py", "frontend.py", "assets/dashboard.css", ".streamlit/config.toml", "backend/evalagent_mcp_server.py", "backend/evalagent_mcp_client.py"):
+        for path in ("app.py", "frontend.py", "assets/dashboard.css", ".streamlit/config.toml", "backend/evalagent_mcp_server.py", "backend/evalagent_mcp_client.py", "backend/observability.py"):
             self.assertIn(path, copied)
         for path in copied:
             if not path.endswith(".py"):

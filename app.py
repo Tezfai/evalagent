@@ -4,7 +4,14 @@ from pathlib import Path
 import streamlit as st
 from dotenv import load_dotenv
 
-from frontend import INTEGRATION_CHOICES, SUGGESTED_QUESTIONS, display_report, display_sources
+from backend.observability import consume_completed_metrics
+from frontend import (
+    INTEGRATION_CHOICES,
+    SUGGESTED_QUESTIONS,
+    display_investigation_metrics,
+    display_report,
+    display_sources,
+)
 
 
 load_dotenv()
@@ -126,7 +133,9 @@ if st.session_state.mode == "Investigate":
             result = {
                 "question": question.strip(), "report": "", "sources": [], "failed": False,
                 "azure_devops": azure_devops, "application_insights": st.session_state.application_insights,
+                "metrics": None,
             }
+            consume_completed_metrics()
             with st.status("Investigation running", expanded=True) as status:
                 try:
                     from backend.investigation_runner import run_investigation
@@ -142,6 +151,7 @@ if st.session_state.mode == "Investigate":
                     result["failed"] = True
                     status.update(label="Investigation failed", state="error", expanded=False)
                 finally:
+                    result["metrics"] = consume_completed_metrics()
                     st.session_state.investigation_running = False
             st.session_state.investigations.append(result)
             st.session_state.selected_investigation = len(st.session_state.investigations) - 1
@@ -159,6 +169,7 @@ if st.session_state.mode == "Investigate":
             f"Azure DevOps: {'Include' if result['azure_devops'] else 'Exclude'} | "
             f"Application Insights: {result['application_insights']}"
         )
+        display_investigation_metrics(result.get("metrics"), selected)
         if result["failed"]:
             st.error("The investigation could not be completed. Retry your request. If the problem persists, contact your administrator.")
             st.button("Retry investigation", icon=":material/refresh:", on_click=retry_investigation, args=(result,))

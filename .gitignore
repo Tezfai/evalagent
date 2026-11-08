@@ -2,6 +2,7 @@
 .env
 .env.*
 !.env.example
+.azure/
 
 # Context guides
 PROJECT_CONTEXT.md

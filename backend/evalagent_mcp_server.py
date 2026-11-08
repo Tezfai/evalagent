@@ -4,8 +4,10 @@ from mcp.server.mcpserver import MCPServer
 
 try:
     from . import tool_implementations
+    from .observability import configure_logging, mcp_tool_telemetry
 except ImportError:
     import tool_implementations
+    from observability import configure_logging, mcp_tool_telemetry
 
 
 mcp = MCPServer(
@@ -18,42 +20,49 @@ mcp = MCPServer(
 
 
 @mcp.tool()
+@mcp_tool_telemetry
 def get_incident(incident_id: str) -> list[dict]:
     """Retrieve an incident by ID or search incident evidence by question."""
     return tool_implementations.get_incident(incident_id)
 
 
 @mcp.tool()
+@mcp_tool_telemetry
 def get_deployment(deployment_id: str) -> list[dict]:
     """Retrieve deployment evidence by ID or document name."""
     return tool_implementations.get_deployment(deployment_id)
 
 
 @mcp.tool()
+@mcp_tool_telemetry
 def get_runbook(runbook_name: str) -> list[dict]:
     """Retrieve runbook evidence by name."""
     return tool_implementations.get_runbook(runbook_name)
 
 
 @mcp.tool()
+@mcp_tool_telemetry
 def get_work_item(work_item_id: str) -> dict:
     """Retrieve an Azure DevOps work item."""
     return tool_implementations.get_work_item(work_item_id)
 
 
 @mcp.tool()
+@mcp_tool_telemetry
 def get_pull_request(repository_id: str, pr_id: str) -> dict:
     """Retrieve an Azure DevOps pull request."""
     return tool_implementations.get_pull_request(repository_id, pr_id)
 
 
 @mcp.tool()
+@mcp_tool_telemetry
 def get_release(release_id: str) -> dict:
     """Retrieve an Azure DevOps release for future investigation workflows."""
     return tool_implementations.get_release(release_id)
 
 
 @mcp.tool()
+@mcp_tool_telemetry
 def get_application_insights_telemetry(
     service_name: str,
     start_time: str,
@@ -72,4 +81,5 @@ def get_application_insights_telemetry(
 
 
 if __name__ == "__main__":
+    configure_logging("mcp_server")
     mcp.run("stdio")

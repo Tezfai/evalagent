@@ -1,11 +1,28 @@
 """Synchronous MCP client for the evalagent investigation tool server."""
 
 import asyncio
+import json
 import os
 import sys
+import tempfile
 from pathlib import Path
 
 from mcp import ClientSession, StdioServerParameters, stdio_client
+
+try:
+    from .observability import (
+        current_investigation_id,
+        emit_event,
+        mark_request_metrics_incomplete,
+        record_remote_request,
+    )
+except ImportError:
+    from observability import (
+        current_investigation_id,
+        emit_event,
+        mark_request_metrics_incomplete,
+        record_remote_request,
+    )
 
 
 SERVER_MODULE = "backend.evalagent_mcp_server"
@@ -36,11 +53,21 @@ TOOL_NAMES = (
 
 
 def _server_parameters():
+    environment = {
+        name: os.environ[name]
+        for name in SERVER_ENVIRONMENT_VARIABLES
+        if name in os.environ
+    }
+    environment["EVALAGENT_PROCESS_ROLE"] = "mcp_server"
+    investigation_id = current_investigation_id()
+    if investigation_id:
+        environment["EVALAGENT_INVESTIGATION_ID"] = investigation_id
+
     return StdioServerParameters(
         command=sys.executable,
         args=["-m", SERVER_MODULE],
         cwd=SERVER_ROOT,
-        env={name: os.environ[name] for name in SERVER_ENVIRONMENT_VARIABLES if name in os.environ},
+        env=environment,
     )
 
 
@@ -70,12 +97,111 @@ def _decode_result(result):
         raise RuntimeError("MCP tool returned an invalid result") from error
 
 
+def _relay_child_stderr(capture, investigation_id):
+    """Collect recognized metrics without forwarding unstructured child output."""
+    complete = False
+    try:
+        capture.flush()
+        capture.seek(0)
+        contents = capture.read()
+        if isinstance(contents, bytes):
+            contents = contents.decode("utf-8", errors="replace")
+        suppressed_lines = 0
+        request_ids = set()
+        checkpoints = []
+        records_valid = True
+        for line in contents.splitlines():
+            try:
+                payload = json.loads(line)
+            except (TypeError, json.JSONDecodeError):
+                suppressed_lines += 1
+                continue
+            if (
+                isinstance(payload, dict)
+                and payload.get("event") == "llm.request.finished"
+                and payload.get("component") == "evalagent.llm"
+            ):
+                request_id = payload.get("request_id")
+                if (
+                    not isinstance(request_id, str)
+                    or request_id in request_ids
+                    or not record_remote_request(payload, investigation_id)
+                ):
+                    records_valid = False
+                    suppressed_lines += 1
+                else:
+                    request_ids.add(request_id)
+            elif (
+                isinstance(payload, dict)
+                and payload.get("event") == "mcp.telemetry.finished"
+                and payload.get("component") == "evalagent.mcp"
+                and payload.get("investigation_id") == investigation_id
+            ):
+                checkpoints.append(payload)
+            else:
+                suppressed_lines += 1
+        if len(checkpoints) == 1:
+            checkpoint = checkpoints[0]
+            count = checkpoint.get("calls_attempted")
+            complete = (
+                records_valid
+                and checkpoint.get("request_metrics_complete") is True
+                and isinstance(count, int) and not isinstance(count, bool)
+                and count == len(request_ids)
+            )
+        if suppressed_lines:
+            emit_event(
+                "mcp.child_stderr.suppressed",
+                component="evalagent.mcp",
+                line_count=suppressed_lines,
+            )
+    except Exception as error:
+        emit_event(
+            "mcp.stderr_relay.failed",
+            component="evalagent.mcp",
+            level=40,
+            error_type=type(error).__name__,
+        )
+    finally:
+        if not complete:
+            mark_request_metrics_incomplete(investigation_id)
+
+
 async def _call_tool_async(name, arguments):
     if name not in TOOL_NAMES:
         raise ValueError(f"Unsupported MCP tool: {name}")
 
+    investigation_id = current_investigation_id()
+    capture = None
+    relay_capture = False
     try:
-        async with stdio_client(_server_parameters()) as (read, write):
+        capture = tempfile.TemporaryFile(mode="w+b")
+        relay_capture = True
+    except OSError as error:
+        mark_request_metrics_incomplete()
+        emit_event(
+            "mcp.stderr_capture.unavailable",
+            component="evalagent.mcp",
+            level=40,
+            error_type=type(error).__name__,
+        )
+        try:
+            capture = open(os.devnull, "w+b")
+        except OSError as sink_error:
+            emit_event(
+                "mcp.stderr_sink.unavailable",
+                component="evalagent.mcp",
+                level=40,
+                error_type=type(sink_error).__name__,
+            )
+            raise RuntimeError("MCP server stderr could not be isolated") from sink_error
+
+    try:
+        server_context = stdio_client(
+            _server_parameters(),
+            errlog=capture,
+        )
+        async with server_context as (read, write):
             async with ClientSession(read, write) as session:
                 await session.initialize()
                 result = await session.call_tool(name, arguments=arguments)
@@ -84,6 +210,28 @@ async def _call_tool_async(name, arguments):
         raise
     except Exception as error:
         raise RuntimeError(f"MCP tool '{name}' is unavailable") from error
+    finally:
+        if capture is not None:
+            if relay_capture:
+                try:
+                    _relay_child_stderr(capture, investigation_id)
+                except Exception as error:
+                    mark_request_metrics_incomplete()
+                    emit_event(
+                        "mcp.stderr_relay.failed",
+                        component="evalagent.mcp",
+                        level=40,
+                        error_type=type(error).__name__,
+                    )
+            try:
+                capture.close()
+            except OSError as error:
+                emit_event(
+                    "mcp.stderr_capture.close_failed",
+                    component="evalagent.mcp",
+                    level=40,
+                    error_type=type(error).__name__,
+                )
 
 
 def call_tool(name, **arguments):

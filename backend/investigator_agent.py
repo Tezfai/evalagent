@@ -4,6 +4,11 @@ import os
 from dotenv import load_dotenv
 from openai import AzureOpenAI
 
+try:
+    from .observability import agent_span, tracked_chat_completion
+except ImportError:
+    from observability import agent_span, tracked_chat_completion
+
 load_dotenv()
 
 GPT5_MINI_DEPLOYMENT = os.getenv(
@@ -43,12 +48,15 @@ object.
 """
 
 
+@agent_span("planner")
 def create_investigation_plan(question):
     """Analyze a question and return an investigation plan as a Python dictionary."""
     if not question or not question.strip():
         raise ValueError("question must not be empty")
 
-    response = client.chat.completions.create(
+    response = tracked_chat_completion(
+        "planner",
+        client,
         model=GPT5_MINI_DEPLOYMENT,
         messages=[
             {"role": "system", "content": SYSTEM_PROMPT},
