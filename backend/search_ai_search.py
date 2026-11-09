@@ -13,6 +13,26 @@ except ImportError:
 
 load_dotenv()
 
+_LUCENE_SPECIAL_CHARACTERS = frozenset(r'+-&|!(){}[]^"~*?:\/')
+
+
+def _document_basename(file_name):
+    return str(file_name).replace("\\", "/").rsplit("/", 1)[-1]
+
+
+def _escape_lucene_phrase(value):
+    return "".join(
+        f"\\{character}" if character in _LUCENE_SPECIAL_CHARACTERS else character
+        for character in value
+    )
+
+
+def _document_filter(file_name):
+    basename = _document_basename(file_name)
+    phrase = f'"{_escape_lucene_phrase(basename)}"'
+    odata_phrase = phrase.replace("'", "''")
+    return f"search.ismatch('{odata_phrase}', 'file', 'full', 'all')"
+
 
 def search_chunks(query):
     search_endpoint = os.getenv("AZURE_SEARCH_ENDPOINT")
@@ -101,16 +121,17 @@ def search_document(file_name):
         index_name=search_index_name,
         credential=AzureKeyCredential(search_key),
     )
-    requested_file = os.path.basename(file_name).lower()
+    requested_file = _document_basename(file_name).lower()
     results = search_client.search(
         search_text="*",
+        filter=_document_filter(file_name),
         select=["file", "chunk_id", "content"],
     )
     results = list(results)
     matching_results = [
         result
         for result in results
-        if os.path.basename(str(result.get("file", ""))).lower()
+        if _document_basename(result.get("file", "")).lower()
         == requested_file
     ]
     if not matching_results:
