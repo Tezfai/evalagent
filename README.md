@@ -97,7 +97,8 @@ evalagent/
 ├── .env.example                      # Environment variables template
 ├── backend/
 │   ├── blob_storage_client.py        # Azure Blob Storage client & document manager
-│   ├── ingest_ai_search.py           # Corpus ingestion & Azure AI Search indexer
+│   ├── ingest_ai_search.py           # Safe legacy entry point for Blob-based restore
+│   ├── restore_search_index.py       # Guarded Blob-to-Azure AI Search restoration
 │   ├── search_ai_search.py           # Vector search & document retrieval module
 │   ├── rag_ai_search.py              # End-to-end RAG question-answering pipeline
 │   ├── investigation_runner.py       # Multi-agent investigation workflow coordinator
@@ -186,42 +187,27 @@ az login
 
 ---
 
-## 📦 Data Ingestion & Azure Blob Storage Setup
+## 📦 Restore Azure AI Search
 
-EvalAgent uses **Azure Blob Storage** as the centralized, cloud-backed source for the incident and engineering corpus. Follow these steps to upload your documentation and index it into Azure AI Search:
+The existing Blob-based ingestion pipeline already downloads Markdown documents, chunks them with the current 500-character/100-character-overlap settings, generates embeddings, creates the existing HNSW index schema, and uploads chunks. The minimal guarded restore command reuses that implementation:
 
-### Step 1: Upload Corpus to Azure Blob Storage
-
-The project includes an automated sync script ([scripts/upload_data_to_blob.py](scripts/upload_data_to_blob.py)) that discovers all Markdown files from your local corpus directory and uploads them to the private Azure Blob container (`evalagent-documents`), preserving folder hierarchy (such as `incidents/`, `deployments/`, `runbooks/`, `architecture/`, and `engineering/`):
-
-1. **Authenticate to Azure** (uses `DefaultAzureCredential`):
-   ```bash
-   az login
-   ```
-
-2. **Run the Upload Script**:
-   ```bash
-   # Uploads files from the local data/ folder by default
-   python scripts/upload_data_to_blob.py
-   ```
-
-   > **Custom Directory Support**: If your markdown corpus is in a backup or custom directory (e.g. `data_backup/`), you can pass the path or call the sync utility directly:
-   > ```bash
-   > python -c "from scripts.upload_data_to_blob import sync_local_data_to_blob; sync_local_data_to_blob('data_backup')"
-   > ```
-
-3. **Verify Uploaded Blobs in Azure**:
-   ```bash
-   az storage blob list --account-name <your-storage-account-name> --container-name evalagent-documents --auth-mode login --output table
-   ```
-
-### Step 2: Ingest from Blob Storage into Azure AI Search
-
-Once the documents are stored in Azure Blob Storage, run the ingestion pipeline. It downloads the corpus directly from the Blob container in memory, creates chunk embeddings via Azure OpenAI, and builds/updates the Azure AI Search index:
-
-```bash
-python backend/ingest_ai_search.py
+```powershell
+python -m backend.restore_search_index
 ```
+
+First provision an Azure AI Search service and an Azure OpenAI embedding deployment. Configure `.env` with `AZURE_SEARCH_ENDPOINT`, `AZURE_SEARCH_INDEX`, `AZURE_SEARCH_KEY`, `AZURE_OPENAI_ENDPOINT`, `AZURE_OPENAI_API_KEY`, and `AZURE_OPENAI_EMBEDDING_DEPLOYMENT`. Configure `AZURE_STORAGE_ACCOUNT_NAME` and, if needed, `AZURE_STORAGE_CONTAINER_NAME`; authenticate with an identity that can read the Blob container. `AZURE_SEARCH_INDEX` must be set explicitly. The Search key must be permitted to create an index and upload documents.
+
+The guarded command refuses to proceed if the configured index already exists. On an absent index it delegates ingestion with create-only behavior, so a concurrent index creation also fails instead of being updated or deleted. It does not create or delete Azure resources. The original `python backend/ingest_ai_search.py` entry point retains its existing delete-and-recreate behavior when its index already exists; use the guarded module command for restoration.
+
+The tracked `data_backup/` directory contains the local Markdown source backup used by this pipeline's Blob upload utility. Its documents were checked for non-empty UTF-8 content and unique basenames. If the configured Blob container needs to be seeded from that backup, the existing helper can upload it:
+
+```powershell
+python -c "from scripts.upload_data_to_blob import sync_local_data_to_blob; sync_local_data_to_blob('data_backup')"
+```
+
+That upload writes/overwrites matching Blob names and does not remove other blobs; use it only after confirming the target container is appropriate and contains no stale Markdown sources. The restore command itself reads all Markdown files in the configured container.
+
+**Cost warning:** a real restoration makes Azure OpenAI embedding requests for the corpus and consumes Azure AI Search capacity. Offline tests use mocks and make no paid requests. The existing ingester reports upload success; it does not perform a full post-upload content-equivalence or vector-retrieval audit.
 
 ---
 

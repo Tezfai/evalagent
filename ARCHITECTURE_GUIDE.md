@@ -86,7 +86,7 @@ The source shape is:
 
 ```python
 {
-    "file": "data/incidents/incident-1042.md",
+    "file": "incidents/incident-1042.md",
     "chunk_id": 0,
     "content": "retrieved Markdown text"
 }
@@ -111,18 +111,21 @@ Both functions validate these settings before using Azure AI Search:
 
 ### Index creation and ingestion
 
+#### `backend/restore_search_index.py`
+
+This minimal guarded command verifies that `AZURE_SEARCH_INDEX` is configured and absent, then delegates to `backend/ingest_ai_search.py`:
+
+```powershell
+python -m backend.restore_search_index
+```
+
+The wrapper uses the configured Azure AI Search endpoint/key and the existing Blob-backed Markdown ingestion pipeline. It does not create or delete Azure resources, and it refuses an existing index before embeddings are requested. Its guarded call uses `create_index`, not update or delete; if another process creates the index after preflight, index creation fails rather than overwriting it.
+
 #### `backend/ingest_ai_search.py`
 
-This is a destructive rebuild script:
+The existing ingestion implementation downloads all `.md` blobs, normalizes literal `\\n` sequences, chunks at 500 characters with 100-character overlap, creates an embedding for each chunk using the configured deployment, creates the existing `id`, `file`, `chunk_id`, `content`, and `embedding` fields with an HNSW vector profile, and uploads in batches of 1,000.
 
-1. Reads every `data/**/*.md` file.
-2. Normalizes literal `\\n` sequences.
-3. Splits documents into 500-character chunks with 100-character overlap.
-4. Creates an embedding for every chunk.
-5. Deletes the configured Azure AI Search index if it exists.
-6. Creates fields for `id`, `file`, `chunk_id`, `content`, and `embedding`.
-7. Configures an HNSW vector profile.
-8. Uploads documents in batches of 1,000.
+Calling the original ingestion script directly retains its prior delete-and-recreate behavior when an index already exists. The guarded restore wrapper invokes the same pipeline in create-only mode. The ingester reports upload results but does not independently verify every retrieved chunk or vector search result.
 
 The indexed document shape is:
 
@@ -136,7 +139,7 @@ The indexed document shape is:
 }
 ```
 
-Run this only when the target index and credentials are correct because it deletes and recreates the index.
+The tracked `data_backup/` Markdown files are verified as non-empty UTF-8 documents with unique basenames. They can be used to seed Blob Storage with the existing upload helper; ignored FAISS and pickle artifacts are not required by the active Azure AI Search pipeline.
 
 ### Multi-agent investigation workflow
 
@@ -456,7 +459,7 @@ pytest -q
 python -m backend.evalagent_mcp_client
 ```
 
-Do not run `backend/ingest_ai_search.py` during ordinary validation because it deletes and recreates the Azure AI Search index.
+Do not run a real restore during ordinary validation: it makes paid embedding calls. Offline restoration tests mock Azure Search, Blob Storage, and Azure OpenAI.
 
 ## Current Technical Debt
 

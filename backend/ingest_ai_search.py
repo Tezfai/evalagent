@@ -38,7 +38,7 @@ def chunk_text(text, chunk_size=500, overlap=100):
     return chunks
 
 
-def main():
+def main(*, require_empty_index=False):
     search_endpoint = os.getenv("AZURE_SEARCH_ENDPOINT")
     search_key = os.getenv("AZURE_SEARCH_KEY")
     search_index_name = os.getenv("AZURE_SEARCH_INDEX", "incident-index")
@@ -139,11 +139,14 @@ def main():
         fields=fields,
         vector_search=vector_search,
     )
-    try:
-        index_client.delete_index(search_index_name)
-    except ResourceNotFoundError:
-        pass
-    index_client.create_or_update_index(index)
+    if require_empty_index:
+        index_client.create_index(index)
+    else:
+        try:
+            index_client.delete_index(search_index_name)
+        except ResourceNotFoundError:
+            pass
+        index_client.create_or_update_index(index)
 
     search_client = SearchClient(
         endpoint=search_endpoint,
