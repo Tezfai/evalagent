@@ -38,7 +38,7 @@ def search_chunks(query):
     search_endpoint = os.getenv("AZURE_SEARCH_ENDPOINT")
     search_key = os.getenv("AZURE_SEARCH_KEY")
     search_index_name = os.getenv("AZURE_SEARCH_INDEX")
-
+    # Validate required environment variables before proceeding
     required_settings = {
         "AZURE_SEARCH_ENDPOINT": search_endpoint,
         "AZURE_SEARCH_KEY": search_key,
