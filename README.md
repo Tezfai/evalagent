@@ -1,376 +1,288 @@
-# EvalAgent: AI-Powered Incident Investigation & Triage Assistant
+# EvalAgent: Evidence-Grounded Incident Investigation
 
-**EvalAgent** is an enterprise-grade, multi-agent incident investigation system designed for site reliability engineering (SRE) and DevOps teams. It automates root-cause analysis (RCA), correlates live production telemetry, links code deployments with Azure DevOps work items/pull requests, and synthesizes runbook guidance into actionable investigation reports using **Azure OpenAI**, **Azure AI Search**, **Azure Blob Storage**, and **Model Context Protocol (MCP)**.
+EvalAgent is an incident investigation assistant for site reliability engineering (SRE) and DevOps workflows. It combines a Streamlit interface, a code-orchestrated multi-agent investigation pipeline, Azure OpenAI, Azure AI Search, and optional Azure DevOps and Application Insights evidence sources.
 
----
+Rather than answering an incident question from a single free-form prompt, the investigation workflow plans evidence collection, retrieves incident and related operational documents, performs focused deployment and runbook analyses, creates a structured report, and asks a separate critic agent to identify unsupported claims and evidence gaps. Reports and the evidence view include source filenames, chunk identifiers, and evidence references so an engineer can inspect the material behind the generated analysis.
 
-## 🌟 Key Capabilities
+> **Deployment status:** This repository contains a Docker image definition, not an Azure Container Apps deployment. The app has no built-in authentication or durable session store. Do not expose it publicly until access control, secrets, ingress, and session behavior have been designed and verified.
 
-- **🤖 Multi-Agent Orchestration**:
-  - **Investigator / Planner Agent**: Generates structured investigation strategies and extracts incident/deployment identifiers.
-  - **Deployment Agent**: Analyzes release notes, configuration changes, and blast radiuses from deployment manifests.
-  - **Runbook Agent**: Evaluates operational procedures, risk levels, and mitigation steps.
-  - **Critic / Reviewer Agent**: Validates investigation reports against primary evidence to prevent hallucinations and enforce factual grounding.
-- **☁️ Cloud Document Corpus (Azure Blob Storage)**:
-  - Centralized, cloud-backed storage for engineering documentation, incident postmortems, architecture guides, and service runbooks.
-  - Integrated with Azure identity (`DefaultAzureCredential` / RBAC).
-- **🔍 Vector Retrieval & Hybrid RAG (Azure AI Search)**:
-  - Embeddings powered by Azure OpenAI (`text-embedding-3-small` / Ada) with HNSW vector indexing.
-  - Chunks, indexes, and retrieves semantically relevant documentation with exact source citations.
-- **📊 Real-Time Observability (Azure Monitor / Application Insights)**:
-  - Executes dynamic KQL queries against Azure Monitor Logs across requests, dependencies, exceptions, and traces for correlated incident time windows.
-- **🔄 DevOps & SCM Integration (Azure DevOps)**:
-  - Automatically fetches linked Work Items, Pull Requests, and release pipelines associated with problematic deployments.
-- **🔌 Model Context Protocol (MCP) Architecture**:
-  - Modular tool provider enabling standardized tool invocation across local and distributed MCP servers.
-- **💻 Interactive Streamlit UI**:
-  - Full-featured web interface for interactive incident Q&A, source inspection, and document verification.
+## What it demonstrates
 
----
+- **Multi-agent workflow engineering:** planner, evidence retrieval, deployment and runbook analysis, report generation, and evidence critic stages coordinated by application code.
+- **Evidence-grounded RAG:** vector retrieval returns source filenames and chunk identifiers; exact document retrieval reconstructs all matching chunks in numeric order.
+- **MCP tool integration:** seven stdio tools can run through either a direct provider or a local MCP subprocess provider.
+- **Evaluation and regression testing:** a deterministic harness measures expected evidence selection, keyword coverage, and the critic verdict without using a second LLM judge.
+- **Operational observability:** allowlisted JSON events and per-investigation request, token, latency, agent, and tool metrics; unavailable telemetry is represented as incomplete rather than as a fabricated zero.
+- **Recoverable Search source data:** 30 tracked Markdown files are stored in [`data_backup/`](data_backup/). A guarded command restores Azure AI Search from Markdown in Blob Storage; the [architecture and restoration guide](ARCHITECTURE_GUIDE.md) documents how to seed Blob from the local backup.
 
-## 🏗️ Architecture
+### What the workflow is designed to answer
+
+- Which incident document is primary, and what does it actually establish about impact, service behavior, cause, and resolution?
+- Which deployment or runbook is linked to the incident, and what supporting evidence does it contribute?
+- What operational data is available from optional integrations for the relevant service and time period?
+- Which report statements are directly supported, which evidence is missing, and what follow-up investigation would close the gaps?
+
+The application is intended to help an engineer organize investigation evidence, not to take production actions. It does not execute runbook commands, roll back deployments, remediate services, or autonomously select and call tools.
+
+## Engineering highlights
+
+### A code-controlled multi-agent pipeline
+
+The investigation stages have distinct responsibilities and explicit data boundaries:
+
+| Stage | Responsibility | Grounding boundary |
+|---|---|---|
+| **Investigation planner** | Parses the request into incident/deployment/runbook references, search flags, and optional telemetry context. | Returns a JSON plan; the Python runner controls tool selection and execution. |
+| **Evidence retrieval** | Fetches exact incident, deployment, and runbook documents or performs vector search when an incident is not identified. | Returns document paths, chunk IDs, content, and source metadata. |
+| **Deployment analyst** | Summarizes retrieved changes, evidence-supported risks, related incidents, and rollback status. | Receives deployment evidence only; risk is not inferred from incident severity. |
+| **Runbook analyst** | Extracts purpose, immediate actions, escalation conditions, recovery steps, and any explicitly stated risk. | Receives retrieved runbook text only. |
+| **Report writer** | Produces a report with separate incident, root cause, impact, resolution, recommendations, and evidence sections. | Prompted to mark unknown facts as not established and not confuse absent evidence with evidence of absence. |
+| **Evidence critic** | Reviews report claims against the selected evidence and lists unsupported claims and evidence gaps. | A model-generated review; it is not an independent or guaranteed fact checker. |
+
+This design makes the orchestration path visible and testable without claiming that the LLM agents are deterministic or that a critic eliminates hallucinations.
+
+### Retrieval and evidence trail
+
+The active Azure AI Search index stores Markdown chunks with a source filename, numeric chunk ID, text, and vector embedding. The ingestion pipeline uses 500-character chunks with 100-character overlap. Conversation retrieves up to five nearest vector results. Exact document lookups use the existing filterable `file` field, preserve exact case-insensitive basename matching, consume paginated results, and sort by numeric chunk ID.
+
+The standard Conversation path is vector retrieval; it is not hybrid text/vector search and currently has no score threshold. Investigation mode can combine exact document retrieval with vector retrieval and retains provenance metadata for evidence selection and display. The source documents are Markdown; embeddings are regenerated during restore rather than stored in Git.
+
+### Optional operational context
+
+- **Azure DevOps:** When enabled, deployment evidence is scanned for recognized work-item, pull-request, and repository identifiers. Matching records can be added as supporting evidence. The UI excludes this integration by default.
+- **Application Insights / Azure Monitor Logs:** When selected and the plan/evidence provides a service and usable time bounds, the tool queries workspace-based telemetry for requests, dependencies, traces, and exceptions. It does not guarantee telemetry exists for every investigation.
+- **MCP:** A provider switch routes the same seven investigation tools through either direct Python calls or a local stdio MCP server. The MCP client starts a subprocess per tool call; it is not a remote MCP deployment or autonomous agent framework.
+
+## Architecture
 
 ```mermaid
-flowchart TD
-    subgraph Data Layer
-        LocalCorpus[data/ corpus] -->|upload_data_to_blob.py| BlobStorage[Azure Blob Storage\nevalagent-documents]
-        BlobStorage -->|ingest_ai_search.py| Embeddings[Azure OpenAI\nEmbeddings]
-        Embeddings --> AISearch[(Azure AI Search\nVector Index)]
-    end
+flowchart LR
+    User --> Streamlit[Streamlit: app.py]
+    Streamlit -->|Conversation| RAG[rag_ai_search.ask_question]
+    RAG --> Embed[Azure OpenAI embeddings]
+    Embed --> Search[(Azure AI Search)]
+    Search --> RAG
+    RAG --> Chat[Azure OpenAI chat]
+    Chat --> Streamlit
 
-    subgraph User & Presentation Layer
-        User[User / SRE] --> StreamlitUI[Streamlit UI\napp.py]
-        User --> CLI[CLI Runner\ninvestigation_runner.py]
-    end
+    Streamlit -->|Investigate| Runner[investigation_runner.run_investigation]
+    Runner --> Planner[Planner agent]
+    Runner --> Registry[ToolRegistry]
+    Registry --> Provider{direct or MCP}
+    Provider --> Tools[tool_implementations]
+    Tools --> Search
+    Tools --> DevOps[Optional Azure DevOps]
+    Tools --> Insights[Optional Azure Monitor Logs]
+    Runner --> Specialists[Deployment and runbook agents]
+    Runner --> Report[Report generation]
+    Report --> Critic[Evidence critic]
+    Critic --> Runner
+    Runner --> Streamlit
 
-    subgraph RAG & Simple Q&A
-        StreamlitUI --> RAG[RAG Pipeline\nrag_ai_search.py]
-        RAG --> AISearch
-        RAG --> LLMChat[Azure OpenAI Chat\nGPT-4o / GPT-5-mini]
-        LLMChat --> StreamlitUI
-    end
-
-    subgraph Multi-Agent Investigation Workflow
-        CLI --> Planner[Investigator / Planner Agent]
-        StreamlitUI -->|Investigate mode| Planner
-        Planner --> ToolRegistry[Tool Registry\nDirect / MCP Provider]
-        
-        ToolRegistry --> AISearch
-        ToolRegistry --> AppInsights[Azure Monitor / App Insights]
-        ToolRegistry --> AzDO[Azure DevOps REST API]
-        
-        ToolRegistry --> DepAgent[Deployment Agent]
-        ToolRegistry --> RunbookAgent[Runbook Agent]
-        
-        DepAgent --> ReportGen[Report Generator]
-        RunbookAgent --> ReportGen
-        
-        ReportGen --> CriticAgent[Critic / Verification Agent]
-        CriticAgent --> FinalReport[Structured Incident RCA Report]
-    end
+    Backup[data_backup Markdown] -. optional upload .-> Blob[Azure Blob Storage]
+    Blob --> Ingest[Guarded Search restoration]
+    Ingest --> Embed
+    Ingest --> Search
 ```
 
----
+### Two distinct user workflows
 
-## 🛠️ Tech Stack
+| Workflow | Behavior |
+|---|---|
+| **Conversation** | Embeds the question, retrieves up to five vector-search chunks, generates an answer from those chunks, and returns source records. It does not use earlier chat turns as backend context. |
+| **Investigate** | The planner returns a JSON plan. The runner retrieves primary and supporting evidence, invokes specialized analyses where evidence is available, optionally enriches from Azure DevOps or Application Insights, generates a report, and asks the critic to review it. The runner—not the model—selects and calls tools. |
 
-| Domain | Technology / Service |
-| :--- | :--- |
-| **Language & Frameworks** | Python 3.11+, Streamlit, Pydantic |
-| **Generative AI & LLMs** | Azure OpenAI (GPT-4o, GPT-5-mini, text-embedding-3-small) |
-| **Vector Search & Indexing** | Azure AI Search (HNSW Vector Profiles, Hybrid Search) |
-| **Cloud Storage** | Azure Blob Storage (`azure-storage-blob`) |
-| **Cloud Identity & Security** | Microsoft Entra ID (`DefaultAzureCredential` / RBAC) |
-| **Observability & Telemetry** | Azure Monitor Logs / Application Insights (`azure-monitor-query`, KQL) |
-| **DevOps & Issue Tracking** | Azure DevOps REST API (Work Items, Pull Requests, Releases) |
-| **Agent Tool Protocol** | Model Context Protocol (MCP SDK) |
-| **Testing & CI** | `unittest`, `unittest.mock` (Comprehensive offline mocked test suite) |
+The investigation report is shown in Overview, Deployment, Runbook, Evidence, and Review tabs. The Review tab is a model-generated assessment, not an independent verification. Investigation and conversation histories live in Streamlit session state and are not durable.
 
----
+### Tool surface
 
-## 📂 Project Structure
+The MCP server exposes the same tool implementation used by the direct provider:
 
-```
+| Tool | Purpose |
+|---|---|
+| `get_incident` | Retrieve an incident document by identifier, or search incident evidence from a natural-language request. |
+| `get_deployment` | Retrieve deployment evidence by identifier or filename. |
+| `get_runbook` | Retrieve runbook evidence by name. |
+| `get_work_item` | Retrieve a referenced Azure DevOps work item. |
+| `get_pull_request` | Retrieve a referenced Azure DevOps pull request. |
+| `get_release` | Retrieve an Azure DevOps release; exposed for tool use, though the current investigation runner does not automatically request it. |
+| `get_application_insights_telemetry` | Query and normalize workspace-based Application Insights telemetry. |
+
+## User experience
+
+The Streamlit app has two separate workspaces:
+
+- **Investigate** accepts an investigation request, integration choices, and maintains a session history of reports. The sidebar examples populate the request field; they do not immediately invoke an investigation. Failed investigations retain the inputs and offer a retry.
+- **Conversation** answers a document-grounded question and keeps displayed chat messages in session state. Previous messages are not passed back to the RAG backend as conversation context.
+
+Investigation reports are organized into Overview, Deployment, Runbook, Evidence, and Review tabs. The UI includes a control to download the original Markdown report, preserves unknown report sections, and displays retrieved chunk text with filename and chunk identifiers. If a local copy exists under `data/` or `data_backup/`, it can also show that full source document. The application does not fetch full source files from Blob during rendering.
+
+The dashboard's advanced metrics are collapsed by default. They distinguish investigation wall-clock time from cumulative LLM and tool durations, show per-stage request/token measurements where complete, and mark unavailable or incomplete metrics as unavailable instead of substituting zeros. Tool duration may include MCP startup and retrieval, and LLM work may overlap tool duration; these durations should not be added together.
+
+## Screenshots
+
+### Investigation workspace
+
+The main Investigate workspace shows the incident request form, optional integration settings, configured tool provider, and the empty session state before a run.
+
+![EvalAgent Investigate workspace before running an incident investigation](image.png)
+
+### Completed investigation and report
+
+The completed investigation view shows the request, high-level run metrics, successful completion status, report download control, and report navigation tabs.
+
+![Completed incident investigation with summary metrics and report tabs](im2age.png)
+
+The Overview tab presents the primary incident evidence, generated root-cause analysis, observed impact, resolution actions, and recommendations.
+
+![Incident investigation report overview with evidence-grounded findings](i1mage.png)
+
+### Advanced investigation metrics
+
+The expanded metrics panel breaks down elapsed time, observed LLM and tool durations, per-agent latency, token usage by stage, and MCP/tool execution counts and outcomes. Cost is shown as unavailable when verified pricing is not configured.
+
+![Expanded investigation metrics with latency, token, and tool breakdowns](imag1e.png)
+
+These screenshots use the repository's incident 1042 demonstration data. Review and sanitize screenshots before publishing if the underlying incident details are not intended for public release.
+
+## Technology
+
+| Area | Current implementation |
+|---|---|
+| Web UI | Python, Streamlit, custom CSS, native Streamlit theme |
+| LLM inference and embeddings | Azure OpenAI Python SDK; chat and embedding deployment names are environment configuration |
+| Retrieval | Azure AI Search vector queries and exact document lookup; HNSW vector index |
+| Source documents | Markdown in Blob Storage for ingestion, with a tracked repository backup in `data_backup/` |
+| Agent tool boundary | Local Model Context Protocol (MCP) stdio client/server, optional via provider setting |
+| Optional integrations | Azure DevOps REST API; Azure Monitor Logs query API for Application Insights |
+| Application identity | `DefaultAzureCredential` in Blob and Azure Monitor clients; API keys in current OpenAI and Search clients |
+| Observability | Allowlisted JSON console events and per-investigation in-memory metrics |
+| Tests | Python `unittest` and `unittest.mock`; offline bootstrap blocks external network access |
+| Container | Digest-pinned Python 3.13 slim image, binary wheels, non-root runtime user |
+
+## Repository map
+
+```text
 evalagent/
-├── app.py                            # Streamlit web UI & interactive chat
-├── requirements.txt                  # Python dependencies
-├── .env.example                      # Environment variables template
+├── app.py                         # Streamlit entry point and session workflows
+├── frontend.py                    # Report, evidence, and metrics presentation
+├── assets/dashboard.css           # Responsive dashboard styling
+├── .streamlit/config.toml         # Streamlit theme and safe error-display setting
 ├── backend/
-│   ├── blob_storage_client.py        # Azure Blob Storage client & document manager
-│   ├── ingest_ai_search.py           # Safe legacy entry point for Blob-based restore
-│   ├── restore_search_index.py       # Guarded Blob-to-Azure AI Search restoration
-│   ├── search_ai_search.py           # Vector search & document retrieval module
-│   ├── rag_ai_search.py              # End-to-end RAG question-answering pipeline
-│   ├── investigation_runner.py       # Multi-agent investigation workflow coordinator
-│   ├── investigator_agent.py         # Investigation planning & intent parsing agent
-│   ├── deployment_agent.py           # Deployment risk & release analysis agent
-│   ├── runbook_agent.py              # Operational runbook analysis agent
-│   ├── critic_agent.py               # Factual review & grounding verification agent
-│   ├── application_insights_client.py# Azure Monitor KQL query engine
-│   ├── azure_devops_client.py        # Azure DevOps REST integration
-│   ├── tool_registry.py              # Dispatcher for Direct vs. MCP tool providers
-│   ├── tool_implementations.py       # Core tool execution logic
-│   ├── evalagent_mcp_client.py       # MCP client interface
-│   └── evalagent_mcp_server.py       # Standardized MCP stdio server
-├── data/                             # Engineering documentation corpus
-│   ├── architecture/                 # Service architecture diagrams and specs
-│   ├── deployments/                  # Deployment release manifests
-│   ├── engineering/                  # Historical RCA postmortems and deep-dives
-│   ├── incidents/                    # Incident logs and timeline records
-│   └── runbooks/                     # Operational runbooks and mitigation guides
-├── scripts/
-│   ├── upload_data_to_blob.py        # Sync local data/ corpus to Azure Blob Storage
-│   └── generate_appinsights_telemetry.py # Synthetic telemetry generator for testing
+│   ├── investigation_runner.py    # Investigation orchestration and report assembly
+│   ├── investigator_agent.py      # Planner
+│   ├── deployment_agent.py        # Deployment analysis
+│   ├── runbook_agent.py           # Runbook analysis
+│   ├── critic_agent.py            # Evidence-based report review
+│   ├── rag_ai_search.py           # Conversation RAG workflow
+│   ├── search_ai_search.py        # Vector and exact-document retrieval
+│   ├── tool_registry.py           # Direct/MCP provider facade
+│   ├── tool_implementations.py    # Shared retrieval and integration calls
+│   ├── evalagent_mcp_client.py    # Local MCP subprocess client
+│   ├── evalagent_mcp_server.py    # Seven stdio tools
+│   ├── observability.py           # JSON events and request/execution metrics
+│   ├── ingest_ai_search.py        # Existing Blob-to-Search ingestion pipeline
+│   └── restore_search_index.py   # Guarded, create-only restoration command
+├── data_backup/                   # Tracked Markdown source backup
+├── scripts/upload_data_to_blob.py # Optional local backup upload helper
 └── tests/
-    ├── test_application_insights.py  # Application Insights client tests
-    ├── test_blob_storage.py          # Azure Blob Storage integration & mock tests
-    └── test_investigation_runner.py  # Multi-agent workflow and tool tests
+    ├── eval_cases.json            # Fixed real-evaluation cases
+    └── test_*.py                  # Offline mocked regression tests
 ```
 
----
+The legacy local FAISS files and modules are not used by the active app. The Docker image explicitly copies the active runtime modules rather than the whole repository.
 
-## 🚀 Getting Started
+## Quick start
 
-### Prerequisites
+### Requirements
 
-- **Python 3.10+**
-- **Azure Subscription** with:
-  - Azure OpenAI Service (Chat & Embedding models deployed)
-  - Azure AI Search Service
-  - Azure Storage Account with a Blob container (`evalagent-documents`)
-  - *(Optional)* Azure Monitor / Log Analytics Workspace & Azure DevOps organization
+- Python 3.13 is the version used by the pinned Docker image.
+- Azure OpenAI chat and embedding deployments.
+- Azure AI Search with the index configured for this application.
+- Azure credentials for Blob Storage only when restoring from Blob, and for Application Insights when that integration is enabled.
 
-### 1. Installation
+The repository pins its direct runtime dependencies in [`requirements.txt`](requirements.txt) and constrains transitive packages in [`requirements.lock`](requirements.lock).
 
-Clone the repository and install the required dependencies:
+### Install and configure
 
-```bash
-git clone https://github.com/your-username/evalagent.git
-cd evalagent
-pip install -r requirements.txt
+From the repository root, in PowerShell:
+
+```powershell
+git clone https://github.com/Tezfai/evalagent.git
+Set-Location evalagent
+py -3.13 -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install -r requirements.txt
+Copy-Item .env.example .env
 ```
 
-### 2. Configure Environment Variables
+Edit `.env` with the endpoints, keys, index, and deployment names for your own Azure resources. Values in `.env.example` are examples, not resource names that are guaranteed to exist. The app currently authenticates to Azure OpenAI and Azure AI Search with API keys. Blob Storage and Application Insights use `DefaultAzureCredential`; `az login` is one local development option when the identity has the required data-plane permissions.
 
-Create a `.env` file in the project root based on `.env.example`:
+Use the [configuration reference and setup guide](ARCHITECTURE_GUIDE.md#6-configuration-reference) for variable meanings, optional integrations, and least-privilege guidance.
 
-```env
-# Azure OpenAI
-AZURE_OPENAI_ENDPOINT=https://<your-openai-resource>.openai.azure.com/
-AZURE_OPENAI_API_KEY=<your-api-key>
-AZURE_OPENAI_CHAT_DEPLOYMENT=gpt-4o-mini
-AZURE_OPENAI_EMBEDDING_DEPLOYMENT=text-embedding-3-small
-AZURE_OPENAI_GPT5_MINI_DEPLOYMENT=gpt-5-mini
+### Run the application
 
-# Azure AI Search
-AZURE_SEARCH_ENDPOINT=https://<your-search-service>.search.windows.net
-AZURE_SEARCH_KEY=<your-search-admin-key>
-AZURE_SEARCH_INDEX=incident-index
-
-# Azure Blob Storage
-AZURE_STORAGE_ACCOUNT_NAME=<your-storage-account-name>
-AZURE_STORAGE_CONTAINER_NAME=evalagent-documents
-
-# Optional: Azure DevOps & Telemetry
-AZDO_ORG=<your-org>
-AZDO_PROJECT=<your-project>
-AZDO_PAT=<your-pat>
-APPLICATIONINSIGHTS_WORKSPACE_ID=<your-workspace-id>
-EVALAGENT_TOOL_PROVIDER=direct
+```powershell
+python -m streamlit run app.py
 ```
 
-Authenticate to Azure locally:
+Open the local URL printed by Streamlit. Azure-backed requests require valid configuration and may incur Azure charges.
 
-```bash
-az login
-```
+### Restore an empty Azure AI Search index
 
----
-
-## 📦 Restore Azure AI Search
-
-The existing Blob-based ingestion pipeline already downloads Markdown documents, chunks them with the current 500-character/100-character-overlap settings, generates embeddings, creates the existing HNSW index schema, and uploads chunks. The minimal guarded restore command reuses that implementation:
+The recommended guarded command is:
 
 ```powershell
 python -m backend.restore_search_index
 ```
 
-First provision an Azure AI Search service and an Azure OpenAI embedding deployment. Configure `.env` with `AZURE_SEARCH_ENDPOINT`, `AZURE_SEARCH_INDEX`, `AZURE_SEARCH_KEY`, `AZURE_OPENAI_ENDPOINT`, `AZURE_OPENAI_API_KEY`, and `AZURE_OPENAI_EMBEDDING_DEPLOYMENT`. Configure `AZURE_STORAGE_ACCOUNT_NAME` and, if needed, `AZURE_STORAGE_CONTAINER_NAME`; authenticate with an identity that can read the Blob container. `AZURE_SEARCH_INDEX` must be set explicitly. The Search key must be permitted to create an index and upload documents.
+It reads Markdown from the configured Blob container, creates embeddings, creates the existing index schema, and uploads chunks. It refuses to replace an existing index. If the Blob container needs the tracked local backup, first create a suitable empty container and upload the Markdown files as documented in [Search restoration](ARCHITECTURE_GUIDE.md#5-restoring-azure-ai-search).
 
-The guarded command refuses to proceed if the configured index already exists. On an absent index it delegates ingestion with create-only behavior, so a concurrent index creation also fails instead of being updated or deleted. It does not create or delete Azure resources. The original `python backend/ingest_ai_search.py` entry point retains its existing delete-and-recreate behavior when its index already exists; use the guarded module command for restoration.
+**Cost and safety:** real restoration makes Azure OpenAI embedding calls and consumes Azure AI Search capacity. The original `backend/ingest_ai_search.py` entry point retains delete-and-recreate behavior; do not use that direct entry point for a guarded restore. Restoration requires a Search admin key; before running the long-lived app, replace it in `.env` with a query key. The current code uses the same `AZURE_SEARCH_KEY` setting for both operations.
 
-The tracked `data_backup/` directory contains the local Markdown source backup used by this pipeline's Blob upload utility. Its documents were checked for non-empty UTF-8 content and unique basenames. If the configured Blob container needs to be seeded from that backup, the existing helper can upload it:
-
-```powershell
-python -c "from scripts.upload_data_to_blob import sync_local_data_to_blob; sync_local_data_to_blob('data_backup')"
-```
-
-That upload writes/overwrites matching Blob names and does not remove other blobs; use it only after confirming the target container is appropriate and contains no stale Markdown sources. The restore command itself reads all Markdown files in the configured container.
-
-**Cost warning:** a real restoration makes Azure OpenAI embedding requests for the corpus and consumes Azure AI Search capacity. Offline tests use mocks and make no paid requests. The existing ingester reports upload success; it does not perform a full post-upload content-equivalence or vector-retrieval audit.
-
----
-
-## 💡 Running the Application
-
-### 1. Interactive Streamlit Web Interface
-
-Launch the EvalAgent dashboard from the repository root:
-
-```bash
-python -m streamlit run app.py
-```
-
-Open http://localhost:8501. The dashboard has two workspaces:
-
-- **Investigate** calls the existing multi-agent runner. Azure DevOps defaults to excluded. Application Insights defaults to **Auto** (the backend plan decides), with **Include** and **Exclude** mapping to the existing boolean arguments. Including an integration is a request, not a connection-health check or a guarantee that evidence is available.
-- **Conversation** retains RAG Q&A, suggested questions, chat history, and expandable sources. Investigation and conversation histories are separate and remain available when switching modes. Each workspace has its own clear-history action.
-
-Investigation results are organized into **Overview**, **Deployment**, **Runbook**, **Evidence**, and **Review**. Unknown report sections remain visible in Overview. The complete original Markdown is accessible and downloadable without changing its content. Critic review is explicitly labeled as a model-generated assessment, not independent verification.
-
-Overview displays explicitly labeled incident metadata, including severity and status badges, without inferring missing facts. Deployment, runbook, impact, and critic fields receive labeled presentation where their formatting is recognized. Unknown, ambiguous, duplicate, or unfamiliar field formats fall back to original section text. Recommendations retain their content and order while recognized list markers receive readable numbering. No risk rating is inferred from incident severity, and critic confidence labels are never converted into numerical scores.
-
-Original-report viewing and Markdown download controls occupy one report-actions area above the tabs. Example investigation requests populate the input without executing a request. Submission is disabled while an investigation runs; failed requests retain their input and offer a retry using the same integration choices. Conversation remains independent document Q&A: displayed message history and investigation reports are not automatically passed as context to its backend.
-
-Evidence retains filenames, available chunk identifiers, category, and retrieved text. Full documents are shown separately when a local copy exists in `data/` or `data_backup/`; otherwise retrieved text remains available. The dashboard does not fetch full documents from Blob Storage.
-
-Execution feedback reflects only the synchronous request's running, completed, or failed state. The backend exposes no agent-stage events or percentage progress. Errors shown to users are sanitized; Streamlit's internal error details are disabled. The dashboard does not display credentials or environment configuration beyond the recognized tool-provider label.
-
-Presentation helpers live in `frontend.py`, custom styling in `assets/dashboard.css`, and native theming in `.streamlit/config.toml`. Runtime dependency versions are pinned in `requirements.txt`, with transitive constraints in `requirements.lock`; review CSS selectors and browser behavior before upgrading Streamlit.
-
-Frontend tests replace both backend entry-point modules with mocks, so they do not invoke Azure:
-
-All offline test modules initialize `tests/offline_bootstrap.py` before importing backend clients. It disables dotenv loading, removes inherited service credentials, installs fake test-only OpenAI configuration, and rejects external socket connections. Loopback remains available for Python's event loop. This bootstrap is not imported by the application or production backend. MCP regression tests also initialize a real stdio server and list tools without invoking Azure tools.
-
-```bash
-python -m unittest discover -s tests -p test_frontend.py -v
-```
-
-**Deployment considerations:** Histories are session-only, not durable storage. Long investigations remain synchronous and cannot be cancelled through the UI. Multi-replica hosting needs WebSocket/session routing considerations. Authentication, Azure ingress, secret management, persistence, and Azure Container Apps deployment are not implemented. Local Docker support is described below.
-
-### Local Docker Execution
-
-The image contains one Streamlit application and its Python backend. MCP tools run as on-demand stdio child processes in the same container, using the same Python interpreter and `/app` working directory. No ingestion, index rebuilds, synthetic telemetry, auxiliary servers, Azure CLI, or developer authentication caches are included.
-
-The base is the official `python:3.13-slim-bookworm` image pinned by digest, verified as Linux/amd64 with Python 3.13.16. Local tests use Python 3.13.5. All 65 pinned runtime packages have compatible, non-yanked CPython 3.13 Linux x86_64 wheels in public PyPI metadata. The image installs binary wheels only and runs `pip check`; no compiler or OS development packages are added. Constraints pin current installed versions rather than upgrading SDKs. The base digest and dependency constraints must be reviewed together for future security updates; artifact hashes are not enforced by this version lock.
-
-Docker was not available in the implementation environment. Dependency metadata, wheel availability, copy paths, exclusion rules, startup configuration, and offline tests were verified, but image build, Linux execution, image health, and container shutdown remain local verification gates. An intentionally fixed base digest is used rather than silently following tag updates.
-
-#### Build And Credential-Free Startup
-
-Install Docker Desktop separately and select Linux containers. Run these Windows PowerShell commands from the repository root:
+## Developer commands
 
 ```powershell
-docker version
-docker build --platform linux/amd64 --tag evalagent:local .
-docker run --detach --init --name evalagent --stop-timeout 30 --cap-drop ALL --security-opt no-new-privileges:true --publish 127.0.0.1:8501:8501 evalagent:local
+# Full offline regression suite; uses mocks and blocks external network access.
+python -B -m unittest discover tests -v
+
+# List MCP tools using the real local stdio server without invoking Azure tools.
+python -m backend.evalagent_mcp_client
+
+# Run the real investigation evaluation harness (uses Azure and may incur charges).
+python -m backend.eval_harness
 ```
 
-Open http://127.0.0.1:8501. Use another host port, such as `127.0.0.1:8503:8501`, if 8501 is already occupied. Credential-free startup supports inspecting the interface and tool discovery, not running live questions. Requests needing Azure credentials will fail with the existing sanitized error handling.
+The offline suite does not require `.env`, Azure credentials, or paid model calls. The real evaluation harness runs the investigation workflow against the fixed cases in [`tests/eval_cases.json`](tests/eval_cases.json); do not change its cases or scoring threshold merely to improve a result.
 
-Streamlit uses exec-form startup, binds to `0.0.0.0:8501` inside the container, disables file watching and usage-statistics collection, and receives `SIGTERM` on stop. Docker's `--init` forwards signals and reaps child processes; the existing MCP context managers handle normal stdio cleanup. Shutdown during an active Linux tool call still needs runtime verification.
+## Docker
+
+The Dockerfile builds a Linux/amd64 image from a digest-pinned Python 3.13 slim base, installs pinned dependencies, runs as UID 10001, and exposes Streamlit on port 8501. The build context is allowlisted: it excludes `.env`, tests, `data_backup/`, and the restore/ingestion modules. Restore the index from the repository environment, not from the image.
 
 ```powershell
+docker build --platform linux/amd64 -t evalagent:local .
+docker run --detach --init --name evalagent --cap-drop ALL `
+  --security-opt no-new-privileges:true `
+  --env-file .env.runtime `
+  --publish 127.0.0.1:8501:8501 `
+  evalagent:local
+
 (Invoke-WebRequest -UseBasicParsing http://127.0.0.1:8501/_stcore/health).StatusCode
-docker inspect --format '{{.State.Health.Status}}' evalagent
-docker exec evalagent python -B -m backend.evalagent_mcp_client
-docker exec evalagent python -c "from pathlib import Path; import os; assert os.getuid() == 10001; assert Path('assets/dashboard.css').is_file(); assert Path('.streamlit/config.toml').is_file(); assert not list(Path('/app').rglob('.env*')); assert not Path('/app/.git').exists(); assert not Path('/app/documents.pkl').exists(); assert not Path('/app/vector_index.faiss').exists(); print('Non-root identity, assets and excluded local files verified')"
 docker stop --time 30 evalagent
-docker inspect --format '{{.State.ExitCode}}' evalagent
 docker rm evalagent
 ```
 
-The health status can initially be `starting`; the probe checks `/_stcore/health` every 30 seconds. It does not call Azure or establish that a deployment, index, credential, or optional integration is usable. Tool discovery should list all seven tools without an API key or Azure CLI login. Observe the stop behavior and exit status rather than assuming shutdown succeeded. No container-image verification is claimed until these commands have been run.
+Create `.env.runtime` with the serving configuration and a Search query key; do not copy the restore-only admin key into it. The health endpoint verifies that Streamlit responds; it does not verify Azure credentials, model deployments, Search data, or optional integrations. Keep local Docker bound to loopback. The image disables dotenv loading, so runtime values must be injected through the container environment.
 
-#### Live Azure Testing
+Stopping the local Docker container or Streamlit process stops only the local application; it does not stop or delete Azure resources or their billing. Review and shut down or delete billable cloud resources separately.
 
-Use a separately maintained environment file at runtime only. An existing `.env` or a local `.env.docker` works; both are excluded from the build context and ignored by Git. Use Docker env-file syntax with `NAME=value` entries; avoid shell interpolation and unnecessary surrounding quotes. Do not use build arguments for secrets.
+## Important limitations
 
-```powershell
-docker run --detach --init --name evalagent --stop-timeout 30 --cap-drop ALL --security-opt no-new-privileges:true --env-file .\.env.docker --publish 127.0.0.1:8501:8501 evalagent:local
-```
+- No application authentication, Azure Container Apps configuration, infrastructure-as-code, CI/CD deployment pipeline, or durable investigation storage is included.
+- Search and OpenAI runtime clients use API-key credentials. Azure managed identity is used by Blob Storage and Application Insights clients, not by the current Search/OpenAI clients.
+- Search restoration recreates the index from source Markdown; it does not restore an exact historical index snapshot. The prior audit found content differences between the historical live index and chunks regenerated from the Git backup.
+- The evaluation harness is deterministic in how it scores a produced report, but the report itself and its critic assessment are model-generated.
+- Cost estimates are not configured. Observability reports token usage and measured durations when available; estimated cost remains unavailable without verified pricing.
+- Azure OpenAI Standard deployments are generally usage-billed, while provisioned-throughput deployments can incur capacity charges for reserved throughput. Verify the actual deployment type, region, and billing terms; stopping local Docker or Streamlit does not stop Azure charges.
 
-The image disables dotenv file loading: credentials must be injected into the process environment, not copied into an image layer. OpenAI and AI Search retain their existing API-key contracts, and Azure DevOps retains its optional PAT contract. Application Insights queries require an authorized `DefaultAzureCredential` identity; a host Azure CLI login is not inherited. For explicit local live testing, supply a least-privilege authorized service principal through `AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, and `AZURE_CLIENT_SECRET`, or an explicitly configured certificate/federated credential. Do not mount developer Azure CLI caches. Eventual Azure managed identity can use the existing credential chain after hosting identity and permissions are configured; this Docker change does not create them.
-
-MCP forwards only its existing configuration allowlist, including identity endpoint/header discovery and relevant proxy/CA settings. It does not log forwarded values. Its stdout is reserved for JSON-RPC; retrieval diagnostics go to stderr. Production live credentials are not used by offline tests. Avoid printing complete `docker inspect` output or environment variables on credential-bearing containers.
-
-The strict default-deny `.dockerignore` and explicit `COPY` instructions exclude secrets, Git metadata, tests, corpus backups, scripts, virtual environments, bytecode, and legacy FAISS/pickle files. Azure AI Search remains the retrieval source. Full local source documents are therefore unavailable by default; evidence inspection still shows retrieved chunks and clearly labels the absence of a full document. If needed, explicitly mount a sanitized document folder read-only at `/app/data` or `/app/data_backup`. This is optional and not needed for normal investigations.
-
-#### Offline Tests In The Image
-
-Host tests remain available with `python -B -m unittest discover tests`. To validate the Linux image with the same offline suite, mount only tests and packaging manifests read-only; do not supply an environment file or live credentials:
-
-```powershell
-docker run --rm --init --network none --cap-drop ALL --security-opt no-new-privileges:true --entrypoint python --mount "type=bind,source=$($PWD.Path)\tests,target=/app/tests,readonly" --mount "type=bind,source=$($PWD.Path)\Dockerfile,target=/app/Dockerfile,readonly" --mount "type=bind,source=$($PWD.Path)\.dockerignore,target=/app/.dockerignore,readonly" evalagent:local -B -m unittest discover tests -v
-```
-
-The test bootstrap supplies fake configuration and blocks external socket connections. The real stdio discovery regression lists tools without invoking cloud tools. Live investigations and the real evaluation harness remain opt-in and may consume paid Azure services; they are not run by image startup or offline tests. No authentication or public access restrictions are provided by local Docker: keep the host port bound to loopback until the Azure hosting/security phase.
-
-### 2. Multi-Agent Investigation CLI
-
-Run an autonomous end-to-end incident investigation with multi-agent planning and critic review:
-
-```bash
-python backend/investigation_runner.py
-```
-
----
-
-## 🧪 Testing
-
-The repository includes a comprehensive, offline unit test suite that mocks Azure services and LLM responses:
-
-```bash
-python -m unittest discover tests
-```
-
-The test command works without a local `.env` file, API keys, PATs, or an Azure CLI login. Live investigations and the real evaluation harness are separate, opt-in operations; do not invoke them as offline tests.
-
-MCP subprocesses receive an explicit configuration allowlist for Search, OpenAI embeddings, Azure DevOps, Azure Monitor, Azure identity discovery, proxy/CA settings, and dotenv/bytecode controls. The MCP SDK retains its safe OS environment defaults. Unrelated environment variables are not forwarded, and credentials are never printed by the forwarding code. Managed identity and injected settings therefore do not depend on a local `.env` file; certificate and federated-token file paths still require the referenced files to be available in the process environment.
-
-### LLM observability
-
-Each `run_investigation` call owns one correlation scope and returns its
-existing `(report, sources)` tuple. The Streamlit UI retrieves the associated
-in-memory metrics separately, so direct backend calls and UI investigations
-share the same instrumentation without changing the backend return contract.
-JSON console logs include request stage, deployment, duration, finish reason,
-request outcome, and available Azure OpenAI usage counts; prompts, responses,
-and retrieved evidence are not logged. The UI shows attempted, successful,
-and failed request counts and reports token totals as unavailable whenever
-usage is incomplete. Estimated cost remains unavailable because no verified
-deployment pricing is configured.
-
-The collapsed **Advanced investigation metrics** section adds agent-function
-runtimes with horizontal duration bars, cumulative SDK request and tool-call
-durations, per-stage prompt/completion/total tokens, tool counts and outcomes,
-and payload-free individual SDK request details. Each snapshot is saved with
-its investigation in Streamlit session history; reruns only render that
-snapshot. Agent runtimes include their SDK calls and explicit retries.
-Tool durations measure the existing provider facade, including MCP startup,
-transport, and retrieval. These durations can overlap (including embedding
-requests inside tools), so they are not additive wall-clock time and
-unattributed time is deliberately unavailable. Missing usage, failed metric
-collection, and old snapshots without advanced fields remain unavailable.
-No extra network requests, database, or monitoring dependency is introduced.
-
-MCP child processes receive only the active investigation ID in addition to
-the existing configuration allowlist. Their stderr is captured separately
-from stdio JSON-RPC, recognized request-metric records are aggregated by the
-parent, and non-metric child output is suppressed rather than copied into
-application logs.
-Each child tool emits a payload-free completion checkpoint with its observed
-SDK request count. Missing checkpoints, lost request records, or incomplete
-child collection make parent request/token totals unavailable, including when
-no request records arrive. A verified zero-request checkpoint still permits
-complete zero totals. Collector initialization failures disable metrics for
-that investigation without preventing execution; unavailable tool timing is
-never reported as zero.
-
----
-
-## 🛡️ Factual Grounding & Design Principles
-
-1. **Strict Grounding**: The system explicitly identifies missing context rather than fabricating incident timelines, code changes, or mitigation steps.
-2. **Zero-Secret Cloud Auth**: Leverages Azure Managed Identity / `DefaultAzureCredential` for secure access to Azure Blob Storage and Azure Monitor.
-3. **Decoupled Architecture**: Separation of concerns between storage (Blob), retrieval (AI Search), orchestration (Runner/Agents), and presentation (Streamlit).
+See [`ARCHITECTURE_GUIDE.md`](ARCHITECTURE_GUIDE.md) for detailed data flows, configuration, source-data recovery, security boundaries, Docker operation, testing, and deployment-readiness checks.
