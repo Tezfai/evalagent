@@ -41,3 +41,5 @@ Thumbs.db
 # VS Code / IDE settings
 .vscode/
 .idea/
+
+PROJECT_CONTEXT.MD
