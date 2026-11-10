@@ -4,7 +4,7 @@ EvalAgent is an incident investigation assistant for site reliability engineerin
 
 Rather than answering an incident question from a single free-form prompt, the investigation workflow plans evidence collection, retrieves incident and related operational documents, performs focused deployment and runbook analyses, creates a structured report, and asks a separate critic agent to identify unsupported claims and evidence gaps. Reports and the evidence view include source filenames, chunk identifiers, and evidence references so an engineer can inspect the material behind the generated analysis.
 
-> **Deployment status:** This repository contains a Docker image definition, not an Azure Container Apps deployment. The app has no built-in authentication or durable session store. Do not expose it publicly until access control, secrets, ingress, and session behavior have been designed and verified.
+> **Deployment:** EvalAgent is Dockerized and supports local execution with user-provisioned Azure resources. Public cloud hosting is not currently configured.
 
 ## What it demonstrates
 
